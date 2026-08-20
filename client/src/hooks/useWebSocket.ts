@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 
 interface WebSocketMessage {
   type: string;
-  data: unknown;
+  data: any;
 }
 
 type CallbackFn<T> = (value: T) => void;
@@ -22,7 +22,6 @@ const INITIAL_RECONNECT_DELAY = 1000;
 function getWsUrl(): string {
   if (typeof window === 'undefined') return 'ws://localhost:3001';
 
-  // In development, connect directly to backend
   if (
     window.location.hostname === 'localhost' ||
     window.location.hostname === '127.0.0.1'
@@ -30,7 +29,6 @@ function getWsUrl(): string {
     return 'ws://localhost:3001';
   }
 
-  // In production, use the current host
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}/ws`;
 }
@@ -42,29 +40,50 @@ export function useWebSocket(): UseWebSocketReturn {
   const reconnectDelayRef = useRef(INITIAL_RECONNECT_DELAY);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const connectingRef = useRef(false);
 
-  // Callback refs
   const onChunkRef = useRef<CallbackFn<string> | null>(null);
   const onCompleteRef = useRef<CallbackFn<string> | null>(null);
   const onToolResultRef = useRef<CallbackFn<unknown> | null>(null);
   const onErrorRef = useRef<CallbackFn<string> | null>(null);
 
-  const connect = useCallback(() => {
-    if (!mountedRef.current) return;
-
-    // Clean up existing connection
-    if (wsRef.current) {
-      wsRef.current.close();
+  const cleanup = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
     }
+    if (wsRef.current) {
+      wsRef.current.onopen = null;
+      wsRef.current.onmessage = null;
+      wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    connectingRef.current = false;
+  }, []);
+
+  const connect = useCallback(() => {
+    if (!mountedRef.current || connectingRef.current) return;
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
+
+    cleanup();
+    connectingRef.current = true;
 
     const url = getWsUrl();
+    console.log('[Jarvis] Connecting to', url);
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current) {
+        ws.close();
+        return;
+      }
+      connectingRef.current = false;
       setIsConnected(true);
       reconnectDelayRef.current = INITIAL_RECONNECT_DELAY;
+      console.log('[Jarvis] WebSocket connected');
     };
 
     ws.onmessage = (event: MessageEvent) => {
@@ -74,68 +93,65 @@ export function useWebSocket(): UseWebSocketReturn {
         const message: WebSocketMessage = JSON.parse(event.data as string);
 
         switch (message.type) {
-          case 'chunk':
-            onChunkRef.current?.(message.data as string);
+          case 'assistant_chunk':
+            onChunkRef.current?.(message.data?.text ?? '');
             break;
-          case 'complete':
-            onCompleteRef.current?.(message.data as string);
+          case 'assistant_complete':
+            onCompleteRef.current?.(message.data?.text ?? '');
             break;
           case 'tool_result':
             onToolResultRef.current?.(message.data);
             break;
           case 'error':
-            onErrorRef.current?.(message.data as string);
+            onErrorRef.current?.(message.data?.message ?? 'Unknown error');
+            break;
+          case 'status':
+            console.log('[Jarvis] Status:', message.data?.message);
             break;
         }
       } catch (_e) {
-        console.error('Failed to parse WebSocket message');
+        console.error('[Jarvis] Failed to parse WebSocket message');
       }
     };
 
     ws.onclose = () => {
+      connectingRef.current = false;
       if (!mountedRef.current) return;
       setIsConnected(false);
+      console.log('[Jarvis] WebSocket disconnected, reconnecting...');
 
-      // Schedule reconnect with exponential backoff
       const delay = reconnectDelayRef.current;
-      reconnectDelayRef.current = Math.min(
-        delay * 2,
-        MAX_RECONNECT_DELAY
-      );
+      reconnectDelayRef.current = Math.min(delay * 2, MAX_RECONNECT_DELAY);
 
       reconnectTimerRef.current = setTimeout(() => {
-        connect();
+        if (mountedRef.current) {
+          connect();
+        }
       }, delay);
     };
 
     ws.onerror = () => {
-      // onclose will fire after this, triggering reconnect
+      connectingRef.current = false;
     };
-  }, []);
+  }, [cleanup]);
 
-  // Connect on mount
   useEffect(() => {
     mountedRef.current = true;
     connect();
 
     return () => {
       mountedRef.current = false;
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
+      cleanup();
     };
-  }, [connect]);
+  }, [connect, cleanup]);
 
   const sendMessage = useCallback((text: string) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
-        JSON.stringify({ type: 'message', data: text })
+        JSON.stringify({ type: 'user_message', data: { text } })
       );
     } else {
-      console.warn('WebSocket is not connected');
+      console.warn('[Jarvis] WebSocket is not connected');
     }
   }, []);
 
