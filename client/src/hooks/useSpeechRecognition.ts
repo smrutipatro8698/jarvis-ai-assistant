@@ -136,6 +136,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
         const currentText = (finalText || interimText).trim();
 
         if (modeRef.current === 'wake-word') {
+          setTranscript(currentText);
           if (containsWakePhrase(currentText)) {
             console.log('[Jarvis] Wake word detected!');
             setWakeWordDetected(true);

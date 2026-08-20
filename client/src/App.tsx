@@ -78,19 +78,21 @@ export default function App() {
     }
   }, [speech.wakeWordDetected, tts]);
 
-  // Track capturing state
+  // Track mode changes from speech recognition
   useEffect(() => {
     if (speech.isCapturing) {
       setOrbState('listening');
+    } else if (speech.isListening) {
+      setOrbState('idle');
     }
-  }, [speech.isCapturing]);
+  }, [speech.isCapturing, speech.isListening]);
 
-  // Update transcript display while capturing
+  // Update transcript display — show what mic hears in ALL modes for debugging
   useEffect(() => {
-    if (speech.isCapturing) {
+    if (speech.transcript) {
       setCurrentTranscript(speech.transcript);
     }
-  }, [speech.transcript, speech.isCapturing]);
+  }, [speech.transcript]);
 
   // Handle completed command
   const processCommand = useCallback(
@@ -232,11 +234,7 @@ export default function App() {
         <>
           <JarvisOrb
             state={orbState}
-            transcript={
-              orbState === 'listening' || orbState === 'thinking'
-                ? currentTranscript
-                : undefined
-            }
+            transcript={currentTranscript || undefined}
           />
           <MicButton
             isCapturing={speech.isCapturing}
