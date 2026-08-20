@@ -34,8 +34,13 @@ declare global {
 
 type Mode = 'off' | 'wake-word' | 'command-capture';
 
-const WAKE_PHRASE = 'hey jarvis';
-const SILENCE_TIMEOUT_MS = 2000;
+const WAKE_PHRASES = ['hey jarvis', 'hey jarves', 'a jarvis', 'hey travis', 'hey jervis'];
+const SILENCE_TIMEOUT_MS = 2500;
+
+function containsWakePhrase(text: string): boolean {
+  const lower = text.toLowerCase();
+  return WAKE_PHRASES.some(phrase => lower.includes(phrase));
+}
 
 export interface UseSpeechRecognitionReturn {
   isListening: boolean;
@@ -48,6 +53,7 @@ export interface UseSpeechRecognitionReturn {
   startWakeWordListening: () => void;
   stopAll: () => void;
   isSupported: boolean;
+  isActivated: boolean;
 }
 
 export function useSpeechRecognition(): UseSpeechRecognitionReturn {
@@ -62,18 +68,13 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
   const [transcript, setTranscript] = useState('');
   const [finalTranscript, setFinalTranscript] = useState('');
   const [wakeWordDetected, setWakeWordDetected] = useState(false);
+  const [isActivated, setIsActivated] = useState(false);
 
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const modeRef = useRef<Mode>('off');
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const capturedTextRef = useRef('');
-  const restartingRef = useRef(false);
-  const shouldRestartRef = useRef(false);
-
-  // Keep modeRef in sync
-  useEffect(() => {
-    modeRef.current = mode;
-  }, [mode]);
+  const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearSilenceTimer = useCallback(() => {
     if (silenceTimerRef.current) {
@@ -82,42 +83,41 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     }
   }, []);
 
-  const finishCapture = useCallback(() => {
-    clearSilenceTimer();
-    const text = capturedTextRef.current.trim();
-    if (text) {
-      setFinalTranscript(text);
+  const destroyRecognition = useCallback(() => {
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
     }
-    capturedTextRef.current = '';
-    setTranscript('');
-  }, [clearSilenceTimer]);
-
-  const stopRecognition = useCallback(() => {
-    shouldRestartRef.current = false;
     if (recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch (_e) {
-        // ignore
-      }
+      const rec = recognitionRef.current;
+      rec.onresult = null;
+      rec.onerror = null;
+      rec.onend = null;
+      rec.onstart = null;
+      try { rec.abort(); } catch (_e) { /* ignore */ }
+      recognitionRef.current = null;
     }
   }, []);
 
-  const startRecognition = useCallback(
+  const createAndStartRecognition = useCallback(
     (targetMode: Mode) => {
       if (!SpeechRecognitionAPI) return;
 
-      // Stop any existing recognition
-      stopRecognition();
+      destroyRecognition();
+      clearSilenceTimer();
 
       const recognition = new SpeechRecognitionAPI();
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = 'en-US';
-
       recognitionRef.current = recognition;
-      setMode(targetMode);
+
       modeRef.current = targetMode;
+      setMode(targetMode);
+
+      recognition.onstart = () => {
+        console.log(`[Jarvis] Speech recognition started in ${modeRef.current} mode`);
+      };
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
         let interimText = '';
@@ -133,140 +133,125 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
           }
         }
 
-        const currentText = finalText || interimText;
+        const currentText = (finalText || interimText).trim();
 
         if (modeRef.current === 'wake-word') {
-          const combined = currentText.toLowerCase();
-          if (combined.includes(WAKE_PHRASE)) {
-            // Wake word detected - switch to command capture
+          if (containsWakePhrase(currentText)) {
+            console.log('[Jarvis] Wake word detected!');
             setWakeWordDetected(true);
             setTimeout(() => setWakeWordDetected(false), 600);
 
             capturedTextRef.current = '';
             setTranscript('');
-            setMode('command-capture');
             modeRef.current = 'command-capture';
+            setMode('command-capture');
 
-            // Reset the silence timer for capturing
             clearSilenceTimer();
             silenceTimerRef.current = setTimeout(() => {
-              finishCapture();
-              // Switch back to wake word mode
-              setMode('wake-word');
-              modeRef.current = 'wake-word';
-              // Restart recognition in wake word mode
-              shouldRestartRef.current = true;
-              try {
-                recognition.stop();
-              } catch (_e) {
-                // ignore
+              const captured = capturedTextRef.current.trim();
+              if (captured) {
+                setFinalTranscript(captured);
               }
+              capturedTextRef.current = '';
+              setTranscript('');
+              modeRef.current = 'off';
+              setMode('off');
+              destroyRecognition();
+              setTimeout(() => createAndStartRecognition('wake-word'), 300);
             }, SILENCE_TIMEOUT_MS);
           }
         } else if (modeRef.current === 'command-capture') {
-          // Accumulate captured text
           if (finalText) {
             capturedTextRef.current += ' ' + finalText;
           }
-          setTranscript(
-            (capturedTextRef.current + ' ' + interimText).trim()
-          );
+          setTranscript((capturedTextRef.current + ' ' + interimText).trim());
 
-          // Reset silence timer on new results
           clearSilenceTimer();
           silenceTimerRef.current = setTimeout(() => {
-            finishCapture();
-            // If we were in wake-word mode before, go back to it
-            setMode('wake-word');
-            modeRef.current = 'wake-word';
-            shouldRestartRef.current = true;
-            try {
-              recognition.stop();
-            } catch (_e) {
-              // ignore
+            const captured = capturedTextRef.current.trim();
+            if (captured) {
+              setFinalTranscript(captured);
             }
+            capturedTextRef.current = '';
+            setTranscript('');
+            modeRef.current = 'off';
+            setMode('off');
+            destroyRecognition();
+            setTimeout(() => createAndStartRecognition('wake-word'), 300);
           }, SILENCE_TIMEOUT_MS);
         }
       };
 
       recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
         if (event.error === 'aborted' || event.error === 'no-speech') {
-          return; // These are expected during restarts
+          return;
         }
-        console.error('Speech recognition error:', event.error);
+        console.error('[Jarvis] Speech recognition error:', event.error);
+        if (event.error === 'not-allowed') {
+          console.error('[Jarvis] Microphone permission denied. Click the page first, then try again.');
+        }
       };
 
       recognition.onend = () => {
-        if (restartingRef.current) return;
-
-        if (shouldRestartRef.current && modeRef.current === 'wake-word') {
-          // Restart in wake-word mode after a brief delay
-          shouldRestartRef.current = false;
-          restartingRef.current = true;
-          setTimeout(() => {
-            restartingRef.current = false;
-            if (modeRef.current !== 'off') {
-              startRecognition('wake-word');
-            }
-          }, 200);
-          return;
-        }
-
-        // Browser periodically stops continuous recognition - restart if in wake-word mode
+        console.log(`[Jarvis] Speech recognition ended, mode: ${modeRef.current}`);
         if (modeRef.current === 'wake-word') {
-          restartingRef.current = true;
-          setTimeout(() => {
-            restartingRef.current = false;
+          restartTimerRef.current = setTimeout(() => {
             if (modeRef.current === 'wake-word') {
-              startRecognition('wake-word');
+              console.log('[Jarvis] Restarting wake word listener...');
+              createAndStartRecognition('wake-word');
             }
-          }, 200);
+          }, 300);
         }
       };
 
       try {
         recognition.start();
-      } catch (_e) {
-        console.error('Failed to start speech recognition');
+        setIsActivated(true);
+      } catch (e) {
+        console.error('[Jarvis] Failed to start speech recognition:', e);
       }
     },
-    [SpeechRecognitionAPI, stopRecognition, clearSilenceTimer, finishCapture]
+    [SpeechRecognitionAPI, destroyRecognition, clearSilenceTimer]
   );
 
   const startWakeWordListening = useCallback(() => {
-    startRecognition('wake-word');
-  }, [startRecognition]);
+    createAndStartRecognition('wake-word');
+  }, [createAndStartRecognition]);
 
   const startManualListening = useCallback(() => {
     capturedTextRef.current = '';
     setTranscript('');
-    startRecognition('command-capture');
-  }, [startRecognition]);
+    createAndStartRecognition('command-capture');
+  }, [createAndStartRecognition]);
 
   const stopManualListening = useCallback(() => {
     clearSilenceTimer();
-    finishCapture();
-    setMode('off');
+    const text = capturedTextRef.current.trim();
+    if (text) {
+      setFinalTranscript(text);
+    }
+    capturedTextRef.current = '';
+    setTranscript('');
     modeRef.current = 'off';
-    stopRecognition();
-  }, [clearSilenceTimer, finishCapture, stopRecognition]);
+    setMode('off');
+    destroyRecognition();
+  }, [clearSilenceTimer, destroyRecognition]);
 
   const stopAll = useCallback(() => {
     clearSilenceTimer();
-    setMode('off');
     modeRef.current = 'off';
+    setMode('off');
     capturedTextRef.current = '';
     setTranscript('');
-    stopRecognition();
-  }, [clearSilenceTimer, stopRecognition]);
+    destroyRecognition();
+  }, [clearSilenceTimer, destroyRecognition]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       clearSilenceTimer();
-      stopRecognition();
+      destroyRecognition();
     };
-  }, [clearSilenceTimer, stopRecognition]);
+  }, [clearSilenceTimer, destroyRecognition]);
 
   return {
     isListening: mode === 'wake-word',
@@ -279,5 +264,6 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     startWakeWordListening,
     stopAll,
     isSupported,
+    isActivated,
   };
 }

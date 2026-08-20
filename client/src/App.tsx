@@ -12,7 +12,6 @@ import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { useSpeechSynthesis } from './hooks/useSpeechSynthesis';
 import { useWebSocket } from './hooks/useWebSocket';
 
-// Generate a short ascending two-note chime using Web Audio API
 function playWakeChime() {
   try {
     const ctx = new AudioContext();
@@ -21,7 +20,6 @@ function playWakeChime() {
     gainNode.gain.setValueAtTime(0.15, ctx.currentTime);
     gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
 
-    // First note
     const osc1 = ctx.createOscillator();
     osc1.type = 'sine';
     osc1.frequency.setValueAtTime(440, ctx.currentTime);
@@ -29,7 +27,6 @@ function playWakeChime() {
     osc1.start(ctx.currentTime);
     osc1.stop(ctx.currentTime + 0.12);
 
-    // Second note (higher)
     const gainNode2 = ctx.createGain();
     gainNode2.connect(ctx.destination);
     gainNode2.gain.setValueAtTime(0, ctx.currentTime);
@@ -43,7 +40,6 @@ function playWakeChime() {
     osc2.start(ctx.currentTime + 0.1);
     osc2.stop(ctx.currentTime + 0.3);
 
-    // Cleanup
     setTimeout(() => ctx.close(), 500);
   } catch (_e) {
     // AudioContext may not be available
@@ -55,29 +51,26 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [toolResults, setToolResults] = useState<ToolResult[]>([]);
   const [currentTranscript, setCurrentTranscript] = useState('');
+  const [activated, setActivated] = useState(false);
   const responseBufferRef = useRef('');
 
   const speech = useSpeechRecognition();
   const tts = useSpeechSynthesis();
   const ws = useWebSocket();
 
-  // Start wake word listening on mount
-  useEffect(() => {
-    if (speech.isSupported) {
-      speech.startWakeWordListening();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const handleActivate = useCallback(() => {
+    speech.startWakeWordListening();
+    setActivated(true);
+    playWakeChime();
+  }, [speech]);
 
   // Handle wake word detection
   useEffect(() => {
     if (speech.wakeWordDetected) {
       playWakeChime();
       setOrbState('wake-detected');
-      // Stop any ongoing TTS to avoid overlap
       tts.stop();
 
-      // Brief flash then switch to listening
       const timer = setTimeout(() => {
         setOrbState('listening');
       }, 500);
@@ -89,9 +82,8 @@ export default function App() {
   useEffect(() => {
     if (speech.isCapturing) {
       setOrbState('listening');
-      setCurrentTranscript(speech.transcript);
     }
-  }, [speech.isCapturing, speech.transcript]);
+  }, [speech.isCapturing]);
 
   // Update transcript display while capturing
   useEffect(() => {
@@ -100,26 +92,22 @@ export default function App() {
     }
   }, [speech.transcript, speech.isCapturing]);
 
-  // Handle completed command (finalTranscript changes)
+  // Handle completed command
   const processCommand = useCallback(
     (text: string) => {
       if (!text.trim()) return;
 
-      // Stop TTS if speaking
       tts.stop();
 
-      // Add user message
       setMessages((prev) => [
         ...prev,
         { role: 'user', text: text.trim(), timestamp: new Date() },
       ]);
 
-      // Switch to thinking state
       setOrbState('thinking');
       setCurrentTranscript('');
       responseBufferRef.current = '';
 
-      // Send to backend
       ws.sendMessage(text.trim());
     },
     [tts, ws]
@@ -148,13 +136,11 @@ export default function App() {
       const text = fullText || responseBufferRef.current;
       responseBufferRef.current = '';
 
-      // Add assistant message
       setMessages((prev) => [
         ...prev,
         { role: 'assistant', text, timestamp: new Date() },
       ]);
 
-      // Speak the response
       setOrbState('speaking');
       tts.speak(text);
     });
@@ -184,7 +170,6 @@ export default function App() {
     if (orbState === 'speaking' && !tts.isSpeaking) {
       setOrbState('idle');
       setCurrentTranscript('');
-      // Resume wake word listening
       if (speech.isSupported) {
         speech.startWakeWordListening();
       }
@@ -203,7 +188,26 @@ export default function App() {
     speech.stopManualListening();
   }, [speech]);
 
-  // Tool panel content
+  // Activation screen - browser requires user gesture for mic access
+  if (!activated) {
+    return (
+      <div className="activation-screen" onClick={handleActivate}>
+        <div className="activation-orb" />
+        <h1 className="activation-title">J.A.R.V.I.S.</h1>
+        <p className="activation-subtitle">Just A Rather Very Intelligent System</p>
+        <button className="activation-button" onClick={handleActivate}>
+          Initialize System
+        </button>
+        <p className="activation-hint">Click anywhere to activate voice assistant</p>
+        {!speech.isSupported && (
+          <p className="activation-warning">
+            Web Speech API not supported. Please use Google Chrome.
+          </p>
+        )}
+      </div>
+    );
+  }
+
   const toolPanel = (
     <div className="tool-panel">
       <div className="tool-panel__header">System Output</div>

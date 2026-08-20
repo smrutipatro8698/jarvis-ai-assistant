@@ -1014,3 +1014,109 @@ body::before {
     font-size: 1.1rem;
   }
 }
+
+/* ============================================================
+   Activation Screen
+   ============================================================ */
+
+.activation-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--bg-primary);
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  overflow: hidden;
+}
+
+.activation-screen::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 600px;
+  height: 600px;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+  opacity: 0.3;
+  animation: orb-idle 4s ease-in-out infinite;
+}
+
+.activation-orb {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 40%, var(--accent-primary), #0a3d6b);
+  box-shadow:
+    0 0 30px var(--accent-glow),
+    0 0 60px var(--accent-glow),
+    inset 0 0 20px rgba(33, 150, 243, 0.3);
+  margin-bottom: 2rem;
+  animation: orb-idle 3s ease-in-out infinite;
+  position: relative;
+  z-index: 1;
+}
+
+.activation-title {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 3rem;
+  font-weight: 700;
+  color: var(--accent-primary);
+  margin: 0 0 0.5rem;
+  letter-spacing: 0.3em;
+  text-shadow: 0 0 20px var(--accent-glow);
+  position: relative;
+  z-index: 1;
+}
+
+.activation-subtitle {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 1rem;
+  color: var(--text-secondary);
+  margin: 0 0 3rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  position: relative;
+  z-index: 1;
+}
+
+.activation-button {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--accent-primary);
+  background: transparent;
+  border: 2px solid var(--accent-primary);
+  border-radius: 4px;
+  padding: 0.8rem 2.5rem;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  transition: all 0.3s ease;
+  position: relative;
+  z-index: 1;
+}
+
+.activation-button:hover {
+  background: rgba(33, 150, 243, 0.15);
+  box-shadow: 0 0 20px var(--accent-glow), inset 0 0 20px rgba(33, 150, 243, 0.1);
+}
+
+.activation-hint {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  margin-top: 1.5rem;
+  position: relative;
+  z-index: 1;
+}
+
+.activation-warning {
+  font-size: 0.9rem;
+  color: var(--warning);
+  margin-top: 1rem;
+  position: relative;
+  z-index: 1;
+}
