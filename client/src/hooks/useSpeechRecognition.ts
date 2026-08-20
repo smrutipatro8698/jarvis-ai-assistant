@@ -220,7 +220,14 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
 
       recognition.onend = () => {
         console.log(`[Jarvis] Speech recognition ended, mode: ${modeRef.current}`);
-        if (modeRef.current === 'wake-word') {
+        if (modeRef.current === 'command-capture') {
+          console.log('[Jarvis] Restarting in command-capture mode to keep listening...');
+          restartTimerRef.current = setTimeout(() => {
+            if (modeRef.current === 'command-capture') {
+              createAndStartRecognition('command-capture');
+            }
+          }, 100);
+        } else if (modeRef.current === 'wake-word') {
           restartTimerRef.current = setTimeout(() => {
             if (modeRef.current === 'wake-word') {
               console.log('[Jarvis] Restarting wake word listener...');
