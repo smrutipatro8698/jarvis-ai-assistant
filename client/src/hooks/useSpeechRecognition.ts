@@ -119,6 +119,34 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
         console.log(`[Jarvis] Speech recognition started in ${modeRef.current} mode`);
       };
 
+      (recognition as any).onaudiostart = () => {
+        console.log('[Jarvis] Audio capture started - mic is streaming');
+      };
+
+      (recognition as any).onsoundstart = () => {
+        console.log('[Jarvis] Sound detected');
+      };
+
+      (recognition as any).onspeechstart = () => {
+        console.log('[Jarvis] Speech detected!');
+      };
+
+      (recognition as any).onspeechend = () => {
+        console.log('[Jarvis] Speech ended');
+      };
+
+      (recognition as any).onsoundend = () => {
+        console.log('[Jarvis] Sound ended');
+      };
+
+      (recognition as any).onaudioend = () => {
+        console.log('[Jarvis] Audio capture ended');
+      };
+
+      (recognition as any).onnomatch = () => {
+        console.log('[Jarvis] No match - heard something but could not recognize');
+      };
+
       recognition.onresult = (event: SpeechRecognitionEvent) => {
         let interimText = '';
         let finalText = '';
@@ -184,12 +212,9 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
       };
 
       recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        if (event.error === 'aborted' || event.error === 'no-speech') {
-          return;
-        }
-        console.error('[Jarvis] Speech recognition error:', event.error);
+        console.warn(`[Jarvis] Speech recognition error: ${event.error} - ${event.message || 'no details'}`);
         if (event.error === 'not-allowed') {
-          console.error('[Jarvis] Microphone permission denied. Click the page first, then try again.');
+          console.error('[Jarvis] Microphone permission denied! Check chrome://settings/content/microphone');
         }
       };
 
