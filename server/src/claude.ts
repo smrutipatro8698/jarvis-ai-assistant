@@ -2,6 +2,9 @@ import Anthropic from '@anthropic-ai/sdk';
 import { ConversationMessage, ToolResult } from './types';
 import { getAllToolDefinitions, executeTool } from './tools';
 
+if (process.env.ANTHROPIC_API_KEY) {
+  process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY.trim();
+}
 const client = new Anthropic();
 
 const SYSTEM_PROMPT = `You are Jarvis, an advanced AI assistant inspired by the AI from Iron Man. You are witty, sophisticated, and efficient. Address the user as 'sir' or 'ma'am' occasionally. Keep responses concise and conversational — they will be spoken aloud, so avoid markdown formatting, bullet points, or long lists. When using tools, briefly explain what you're doing. Your personality is helpful, slightly dry humor, and supremely competent.`;

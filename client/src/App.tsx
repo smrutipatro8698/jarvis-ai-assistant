@@ -53,6 +53,7 @@ export default function App() {
   const [currentTranscript, setCurrentTranscript] = useState('');
   const [activated, setActivated] = useState(false);
   const responseBufferRef = useRef('');
+  const followUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const speech = useSpeechRecognition();
   const tts = useSpeechSynthesis();
@@ -99,6 +100,10 @@ export default function App() {
     (text: string) => {
       if (!text.trim()) return;
 
+      if (followUpTimerRef.current) {
+        clearTimeout(followUpTimerRef.current);
+        followUpTimerRef.current = null;
+      }
       tts.stop();
 
       setMessages((prev) => [
@@ -167,14 +172,22 @@ export default function App() {
     });
   }, [ws, tts]);
 
-  // When TTS finishes, return to idle and resume wake word
+  // When TTS finishes, stay in listening mode for follow-up (5s window)
   useEffect(() => {
     if (orbState === 'speaking' && !tts.isSpeaking) {
-      setOrbState('idle');
       setCurrentTranscript('');
-      if (speech.isSupported) {
-        speech.startWakeWordListening();
-      }
+      setOrbState('listening');
+      speech.startManualListening();
+
+      if (followUpTimerRef.current) clearTimeout(followUpTimerRef.current);
+      followUpTimerRef.current = setTimeout(() => {
+        speech.stopManualListening();
+        setOrbState('idle');
+        setCurrentTranscript('');
+        if (speech.isSupported) {
+          speech.startWakeWordListening();
+        }
+      }, 5000);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tts.isSpeaking, orbState]);
