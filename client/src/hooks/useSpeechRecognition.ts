@@ -74,6 +74,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
   const modeRef = useRef<Mode>('off');
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const capturedTextRef = useRef('');
+  const latestInterimRef = useRef('');
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearSilenceTimer = useCallback(() => {
@@ -171,17 +172,23 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
             setTimeout(() => setWakeWordDetected(false), 600);
 
             capturedTextRef.current = '';
+            latestInterimRef.current = '';
             setTranscript('');
             modeRef.current = 'command-capture';
             setMode('command-capture');
 
             clearSilenceTimer();
             silenceTimerRef.current = setTimeout(() => {
-              const captured = capturedTextRef.current.trim();
+              let captured = capturedTextRef.current.trim();
+              if (!captured) {
+                captured = latestInterimRef.current.trim();
+              }
               if (captured) {
+                console.log('[Jarvis] Silence timer (wake-word transition) finalizing:', captured);
                 setFinalTranscript(captured);
               }
               capturedTextRef.current = '';
+              latestInterimRef.current = '';
               setTranscript('');
               modeRef.current = 'off';
               setMode('off');
@@ -193,15 +200,24 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
           if (finalText) {
             capturedTextRef.current += ' ' + finalText;
           }
+          if (interimText) {
+            latestInterimRef.current = interimText;
+          }
           setTranscript((capturedTextRef.current + ' ' + interimText).trim());
 
           clearSilenceTimer();
           silenceTimerRef.current = setTimeout(() => {
-            const captured = capturedTextRef.current.trim();
+            let captured = capturedTextRef.current.trim();
+            if (!captured) {
+              captured = latestInterimRef.current.trim();
+              console.log('[Jarvis] Using interim text as fallback:', captured);
+            }
             if (captured) {
+              console.log('[Jarvis] Silence timer finalizing:', captured);
               setFinalTranscript(captured);
             }
             capturedTextRef.current = '';
+            latestInterimRef.current = '';
             setTranscript('');
             modeRef.current = 'off';
             setMode('off');
@@ -222,9 +238,30 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
         console.log(`[Jarvis] Speech recognition ended, mode: ${modeRef.current}`);
         if (modeRef.current === 'command-capture') {
           console.log('[Jarvis] Restarting in command-capture mode to keep listening...');
+          const pendingText = capturedTextRef.current.trim() || latestInterimRef.current.trim();
           restartTimerRef.current = setTimeout(() => {
             if (modeRef.current === 'command-capture') {
               createAndStartRecognition('command-capture');
+              if (pendingText) {
+                console.log('[Jarvis] Re-arming silence timer after restart, pending:', pendingText);
+                silenceTimerRef.current = setTimeout(() => {
+                  let captured = capturedTextRef.current.trim();
+                  if (!captured) {
+                    captured = latestInterimRef.current.trim();
+                  }
+                  if (captured) {
+                    console.log('[Jarvis] Post-restart silence timer finalizing:', captured);
+                    setFinalTranscript(captured);
+                  }
+                  capturedTextRef.current = '';
+                  latestInterimRef.current = '';
+                  setTranscript('');
+                  modeRef.current = 'off';
+                  setMode('off');
+                  destroyRecognition();
+                  setTimeout(() => createAndStartRecognition('wake-word'), 300);
+                }, SILENCE_TIMEOUT_MS);
+              }
             }
           }, 100);
         } else if (modeRef.current === 'wake-word') {
@@ -253,17 +290,23 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
 
   const startManualListening = useCallback(() => {
     capturedTextRef.current = '';
+    latestInterimRef.current = '';
     setTranscript('');
     createAndStartRecognition('command-capture');
   }, [createAndStartRecognition]);
 
   const stopManualListening = useCallback(() => {
     clearSilenceTimer();
-    const text = capturedTextRef.current.trim();
+    let text = capturedTextRef.current.trim();
+    if (!text) {
+      text = latestInterimRef.current.trim();
+    }
     if (text) {
+      console.log('[Jarvis] stopManualListening finalizing:', text);
       setFinalTranscript(text);
     }
     capturedTextRef.current = '';
+    latestInterimRef.current = '';
     setTranscript('');
     modeRef.current = 'off';
     setMode('off');
@@ -275,6 +318,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     modeRef.current = 'off';
     setMode('off');
     capturedTextRef.current = '';
+    latestInterimRef.current = '';
     setTranscript('');
     destroyRecognition();
   }, [clearSilenceTimer, destroyRecognition]);
