@@ -55,6 +55,7 @@ export default function App() {
   const [activated, setActivated] = useState(false);
   const responseBufferRef = useRef('');
   const followUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speechActiveRef = useRef(false);
 
   const speech = useSpeechRecognition();
   const tts = useSpeechSynthesis();
@@ -88,6 +89,11 @@ export default function App() {
       setOrbState('idle');
     }
   }, [speech.isCapturing, speech.isListening]);
+
+  // Keep speechActiveRef in sync for use inside timers
+  useEffect(() => {
+    speechActiveRef.current = speech.isSpeechActive || !!speech.transcript;
+  }, [speech.isSpeechActive, speech.transcript]);
 
   // Update transcript display — show what mic hears in ALL modes for debugging
   useEffect(() => {
@@ -128,20 +134,13 @@ export default function App() {
   );
 
   // Watch for finalTranscript
-  const lastFinalRef = useRef('');
   useEffect(() => {
-    console.log('[App] finalTranscript effect — current:', JSON.stringify(speech.finalTranscript), 'lastFinal:', JSON.stringify(lastFinalRef.current));
-    if (
-      speech.finalTranscript &&
-      speech.finalTranscript !== lastFinalRef.current
-    ) {
-      console.log('[App] NEW finalTranscript detected, calling processCommand');
-      lastFinalRef.current = speech.finalTranscript;
+    if (speech.finalTranscript) {
+      console.log('[App] NEW finalTranscript, calling processCommand:', JSON.stringify(speech.finalTranscript));
       processCommand(speech.finalTranscript);
-    } else if (speech.finalTranscript && speech.finalTranscript === lastFinalRef.current) {
-      console.log('[App] DUPLICATE finalTranscript — skipping');
+      speech.clearFinalTranscript();
     }
-  }, [speech.finalTranscript, processCommand]);
+  }, [speech.finalTranscript, processCommand, speech.clearFinalTranscript]);
 
   // WebSocket event handlers
   useEffect(() => {
@@ -183,24 +182,31 @@ export default function App() {
     });
   }, [ws, tts]);
 
-  // When TTS finishes, stay in listening mode for follow-up (5s window)
+  // When TTS finishes, stay in listening mode for follow-up
   useEffect(() => {
     if (orbState === 'speaking' && !tts.isSpeaking) {
-      console.log('[App] TTS finished — opening 5s follow-up window');
+      console.log('[App] TTS finished — opening follow-up window');
       setCurrentTranscript('');
       setOrbState('listening');
       speech.startManualListening();
 
-      if (followUpTimerRef.current) clearTimeout(followUpTimerRef.current);
-      followUpTimerRef.current = setTimeout(() => {
-        console.log('[App] 5s follow-up timer expired — calling stopManualListening');
+      const closeFollowUp = () => {
+        if (speechActiveRef.current) {
+          console.log('[App] Speech still active, extending follow-up by 3s');
+          followUpTimerRef.current = setTimeout(closeFollowUp, 3000);
+          return;
+        }
+        console.log('[App] Follow-up window closing');
         speech.stopManualListening();
         setOrbState('idle');
         setCurrentTranscript('');
         if (speech.isSupported) {
           speech.startWakeWordListening();
         }
-      }, 5000);
+      };
+
+      if (followUpTimerRef.current) clearTimeout(followUpTimerRef.current);
+      followUpTimerRef.current = setTimeout(closeFollowUp, 7000);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tts.isSpeaking, orbState]);

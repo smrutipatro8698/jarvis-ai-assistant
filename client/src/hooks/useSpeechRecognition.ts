@@ -48,10 +48,12 @@ export interface UseSpeechRecognitionReturn {
   transcript: string;
   finalTranscript: string;
   wakeWordDetected: boolean;
+  isSpeechActive: boolean;
   startManualListening: () => void;
   stopManualListening: () => void;
   startWakeWordListening: () => void;
   stopAll: () => void;
+  clearFinalTranscript: () => void;
   isSupported: boolean;
   isActivated: boolean;
 }
@@ -69,6 +71,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
   const [finalTranscript, setFinalTranscript] = useState('');
   const [wakeWordDetected, setWakeWordDetected] = useState(false);
   const [isActivated, setIsActivated] = useState(false);
+  const speechActiveRef = useRef(false);
 
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const modeRef = useRef<Mode>('off');
@@ -130,10 +133,12 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
 
       (recognition as any).onspeechstart = () => {
         console.log('[Jarvis] Speech detected!');
+        speechActiveRef.current = true;
       };
 
       (recognition as any).onspeechend = () => {
         console.log('[Jarvis] Speech ended');
+        speechActiveRef.current = false;
       };
 
       (recognition as any).onsoundend = () => {
@@ -293,6 +298,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     console.log('[Jarvis] startManualListening called');
     capturedTextRef.current = '';
     latestInterimRef.current = '';
+    speechActiveRef.current = false;
     setTranscript('');
     createAndStartRecognition('command-capture');
   }, [createAndStartRecognition]);
@@ -309,6 +315,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     }
     capturedTextRef.current = '';
     latestInterimRef.current = '';
+    speechActiveRef.current = false;
     setTranscript('');
     modeRef.current = 'off';
     setMode('off');
@@ -321,9 +328,14 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     setMode('off');
     capturedTextRef.current = '';
     latestInterimRef.current = '';
+    speechActiveRef.current = false;
     setTranscript('');
     destroyRecognition();
   }, [clearSilenceTimer, destroyRecognition]);
+
+  const clearFinalTranscript = useCallback(() => {
+    setFinalTranscript('');
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -338,10 +350,12 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     transcript,
     finalTranscript,
     wakeWordDetected,
+    isSpeechActive: speechActiveRef.current,
     startManualListening,
     stopManualListening,
     startWakeWordListening,
     stopAll,
+    clearFinalTranscript,
     isSupported,
     isActivated,
   };
