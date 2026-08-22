@@ -1,18 +1,26 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 
+export interface VoiceOption {
+  name: string;
+  lang: string;
+  voiceURI: string;
+}
+
 export interface UseSpeechSynthesisReturn {
   speak: (text: string) => void;
   stop: () => void;
   isSpeaking: boolean;
   isSupported: boolean;
+  voices: VoiceOption[];
+  selectedVoice: string;
+  setSelectedVoice: (voiceURI: string) => void;
 }
 
-const PREFERRED_VOICE_NAMES = ['Google', 'Daniel', 'Samantha'];
+const PREFERRED_VOICE_NAMES = ['Google UK English Male', 'Daniel', 'Google', 'Samantha'];
 
-function pickVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
+function pickDefaultVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
   if (voices.length === 0) return null;
 
-  // First try preferred voices
   for (const preferred of PREFERRED_VOICE_NAMES) {
     const match = voices.find(
       (v) => v.name.includes(preferred) && v.lang.startsWith('en')
@@ -20,11 +28,9 @@ function pickVoice(voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null 
     if (match) return match;
   }
 
-  // Fall back to any English voice
   const englishVoice = voices.find((v) => v.lang.startsWith('en'));
   if (englishVoice) return englishVoice;
 
-  // Last resort: first available voice
   return voices[0];
 }
 
@@ -33,26 +39,35 @@ export function useSpeechSynthesis(): UseSpeechSynthesisReturn {
     typeof window !== 'undefined' && 'speechSynthesis' in window;
 
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const [voices, setVoices] = useState<VoiceOption[]>([]);
+  const [selectedVoice, setSelectedVoice] = useState('');
+  const allVoicesRef = useRef<SpeechSynthesisVoice[]>([]);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
-  // Load voices (they may load asynchronously)
   useEffect(() => {
     if (!isSupported) return;
 
     const loadVoices = () => {
-      const voices = window.speechSynthesis.getVoices();
-      voiceRef.current = pickVoice(voices);
+      const rawVoices = window.speechSynthesis.getVoices();
+      allVoicesRef.current = rawVoices;
+
+      const englishVoices = rawVoices
+        .filter((v) => v.lang.startsWith('en'))
+        .map((v) => ({ name: v.name, lang: v.lang, voiceURI: v.voiceURI }));
+      setVoices(englishVoices);
+
+      if (!selectedVoice) {
+        const defaultVoice = pickDefaultVoice(rawVoices);
+        if (defaultVoice) setSelectedVoice(defaultVoice.voiceURI);
+      }
     };
 
     loadVoices();
-
-    // Chrome loads voices async
     window.speechSynthesis.addEventListener('voiceschanged', loadVoices);
     return () => {
       window.speechSynthesis.removeEventListener('voiceschanged', loadVoices);
     };
-  }, [isSupported]);
+  }, [isSupported, selectedVoice]);
 
   const stop = useCallback(() => {
     if (!isSupported) return;
@@ -65,29 +80,23 @@ export function useSpeechSynthesis(): UseSpeechSynthesisReturn {
     (text: string) => {
       if (!isSupported) return;
 
-      // Cancel any ongoing speech
       window.speechSynthesis.cancel();
 
       const utterance = new SpeechSynthesisUtterance(text);
       utteranceRef.current = utterance;
 
-      if (voiceRef.current) {
-        utterance.voice = voiceRef.current;
-      }
+      const voice = allVoicesRef.current.find((v) => v.voiceURI === selectedVoice);
+      if (voice) utterance.voice = voice;
 
       utterance.rate = 1.0;
       utterance.pitch = 1.0;
       utterance.volume = 1.0;
 
-      utterance.onstart = () => {
-        setIsSpeaking(true);
-      };
-
+      utterance.onstart = () => setIsSpeaking(true);
       utterance.onend = () => {
         setIsSpeaking(false);
         utteranceRef.current = null;
       };
-
       utterance.onerror = () => {
         setIsSpeaking(false);
         utteranceRef.current = null;
@@ -95,15 +104,12 @@ export function useSpeechSynthesis(): UseSpeechSynthesisReturn {
 
       window.speechSynthesis.speak(utterance);
     },
-    [isSupported]
+    [isSupported, selectedVoice]
   );
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (isSupported) {
-        window.speechSynthesis.cancel();
-      }
+      if (isSupported) window.speechSynthesis.cancel();
     };
   }, [isSupported]);
 
@@ -112,5 +118,8 @@ export function useSpeechSynthesis(): UseSpeechSynthesisReturn {
     stop,
     isSpeaking,
     isSupported,
+    voices,
+    selectedVoice,
+    setSelectedVoice,
   };
 }

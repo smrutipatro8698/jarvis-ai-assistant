@@ -8,6 +8,7 @@ import { ToolResultCard } from './components/ToolResultCard';
 import type { ToolResult } from './components/ToolResultCard';
 import { StatusBar } from './components/StatusBar';
 import { MicButton } from './components/MicButton';
+import { VoicePicker } from './components/VoicePicker';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { useSpeechSynthesis } from './hooks/useSpeechSynthesis';
 import { useWebSocket } from './hooks/useWebSocket';
@@ -258,7 +259,14 @@ export default function App() {
       }
       right={toolPanel}
       bottom={
-        <StatusBar isConnected={ws.isConnected} orbState={orbState} />
+        <div className="bottom-bar">
+          <StatusBar isConnected={ws.isConnected} orbState={orbState} />
+          <VoicePicker
+            voices={tts.voices}
+            selectedVoice={tts.selectedVoice}
+            onSelect={tts.setSelectedVoice}
+          />
+        </div>
       }
     />
   );
