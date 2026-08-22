@@ -203,6 +203,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
           if (interimText) {
             latestInterimRef.current = interimText;
           }
+          console.log('[Jarvis] command-capture onresult — final:', JSON.stringify(finalText), 'interim:', JSON.stringify(interimText), 'captured:', JSON.stringify(capturedTextRef.current), 'latestInterim:', JSON.stringify(latestInterimRef.current));
           setTranscript((capturedTextRef.current + ' ' + interimText).trim());
 
           clearSilenceTimer();
@@ -289,6 +290,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
   }, [createAndStartRecognition]);
 
   const startManualListening = useCallback(() => {
+    console.log('[Jarvis] startManualListening called');
     capturedTextRef.current = '';
     latestInterimRef.current = '';
     setTranscript('');

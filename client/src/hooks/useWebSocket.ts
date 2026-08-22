@@ -146,12 +146,14 @@ export function useWebSocket(): UseWebSocketReturn {
   }, [connect, cleanup]);
 
   const sendMessage = useCallback((text: string) => {
+    console.log('[Jarvis] sendMessage called, readyState:', wsRef.current?.readyState, 'text:', JSON.stringify(text));
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({ type: 'user_message', data: { text } })
       );
+      console.log('[Jarvis] Message sent to server via WebSocket');
     } else {
-      console.warn('[Jarvis] WebSocket is not connected');
+      console.warn('[Jarvis] WebSocket is not connected, cannot send message');
     }
   }, []);
 

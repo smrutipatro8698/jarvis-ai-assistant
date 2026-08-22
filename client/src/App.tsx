@@ -99,11 +99,16 @@ export default function App() {
   // Handle completed command
   const processCommand = useCallback(
     (text: string) => {
-      if (!text.trim()) return;
+      console.log('[App] processCommand called with:', JSON.stringify(text));
+      if (!text.trim()) {
+        console.log('[App] processCommand: empty text, ignoring');
+        return;
+      }
 
       if (followUpTimerRef.current) {
         clearTimeout(followUpTimerRef.current);
         followUpTimerRef.current = null;
+        console.log('[App] Cleared follow-up timer');
       }
       tts.stop();
 
@@ -116,6 +121,7 @@ export default function App() {
       setCurrentTranscript('');
       responseBufferRef.current = '';
 
+      console.log('[App] Sending to LLM via WebSocket:', text.trim());
       ws.sendMessage(text.trim());
     },
     [tts, ws]
@@ -124,12 +130,16 @@ export default function App() {
   // Watch for finalTranscript
   const lastFinalRef = useRef('');
   useEffect(() => {
+    console.log('[App] finalTranscript effect — current:', JSON.stringify(speech.finalTranscript), 'lastFinal:', JSON.stringify(lastFinalRef.current));
     if (
       speech.finalTranscript &&
       speech.finalTranscript !== lastFinalRef.current
     ) {
+      console.log('[App] NEW finalTranscript detected, calling processCommand');
       lastFinalRef.current = speech.finalTranscript;
       processCommand(speech.finalTranscript);
+    } else if (speech.finalTranscript && speech.finalTranscript === lastFinalRef.current) {
+      console.log('[App] DUPLICATE finalTranscript — skipping');
     }
   }, [speech.finalTranscript, processCommand]);
 
@@ -176,12 +186,14 @@ export default function App() {
   // When TTS finishes, stay in listening mode for follow-up (5s window)
   useEffect(() => {
     if (orbState === 'speaking' && !tts.isSpeaking) {
+      console.log('[App] TTS finished — opening 5s follow-up window');
       setCurrentTranscript('');
       setOrbState('listening');
       speech.startManualListening();
 
       if (followUpTimerRef.current) clearTimeout(followUpTimerRef.current);
       followUpTimerRef.current = setTimeout(() => {
+        console.log('[App] 5s follow-up timer expired — calling stopManualListening');
         speech.stopManualListening();
         setOrbState('idle');
         setCurrentTranscript('');
