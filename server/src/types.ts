@@ -6,7 +6,7 @@ export interface ConversationMessage {
 export interface ToolResult {
   name: string;
   result: any;
-  displayType: 'weather' | 'time' | 'calculation' | 'reminder' | 'system' | 'device' | 'news' | 'text';
+  displayType: 'weather' | 'time' | 'calculation' | 'reminder' | 'system' | 'device' | 'news' | 'search' | 'webpage' | 'text';
 }
 
 export interface WSMessage {

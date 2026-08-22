@@ -166,6 +166,62 @@ function CalculationCard({ result }: { result: Record<string, unknown> }) {
   );
 }
 
+function SearchCard({ result }: { result: Record<string, unknown> }) {
+  const results = (result.results as Array<Record<string, unknown>>) || [];
+  const query = (result.query as string) || '';
+
+  function getDomain(url: string): string {
+    try {
+      return new URL(url).hostname.replace(/^www\./, '');
+    } catch {
+      return url;
+    }
+  }
+
+  return (
+    <div className="tool-card__body">
+      <div className="tool-card--search">
+        <div className="tool-card__query">{query}</div>
+        {results.map((item, i) => (
+          <div key={i} className="tool-card__search-result">
+            <div className="tool-card__result-title">
+              {String(item.rank || i + 1)}. {String(item.title || '')}
+            </div>
+            <div className="tool-card__result-domain">
+              {getDomain(String(item.url || ''))}
+            </div>
+            <div className="tool-card__result-snippet">
+              {String(item.snippet || '')}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WebpageCard({ result }: { result: Record<string, unknown> }) {
+  const title = (result.title as string) || 'Untitled';
+  const url = (result.url as string) || '';
+  const content = (result.content as string) || '';
+  const truncated = result.truncated as boolean;
+
+  const preview = content.length > 250 ? content.slice(0, 250) + '...' : content;
+
+  return (
+    <div className="tool-card__body">
+      <div className="tool-card--webpage">
+        <div className="tool-card__page-title">{title}</div>
+        <div className="tool-card__page-url">{url}</div>
+        <div className="tool-card__page-preview">{preview}</div>
+        {truncated && (
+          <div className="tool-card__truncated-badge">Content truncated</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TextCard({ result }: { result: Record<string, unknown> }) {
   return (
     <div className="tool-card__body">
@@ -190,6 +246,8 @@ const CARD_RENDERERS: Record<
   system: SystemCard,
   reminder: ReminderCard,
   news: NewsCard,
+  search: SearchCard,
+  webpage: WebpageCard,
   calculation: CalculationCard,
   text: TextCard,
 };

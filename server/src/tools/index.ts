@@ -15,6 +15,8 @@ import {
   executeGetDevices,
 } from './devices';
 import { definition as newsDef, execute as newsExec } from './news';
+import { definition as webSearchDef, execute as webSearchExec } from './web-search';
+import { definition as readWebpageDef, execute as readWebpageExec } from './read-webpage';
 
 interface ToolEntry {
   definition: any;
@@ -31,6 +33,8 @@ const toolRegistry: Record<string, ToolEntry> = {
   control_device: { definition: controlDeviceDefinition, execute: executeControlDevice },
   get_devices: { definition: getDevicesDefinition, execute: executeGetDevices },
   get_news: { definition: newsDef, execute: newsExec },
+  web_search: { definition: webSearchDef, execute: webSearchExec },
+  read_webpage: { definition: readWebpageDef, execute: readWebpageExec },
 };
 
 export function getAllToolDefinitions() {
