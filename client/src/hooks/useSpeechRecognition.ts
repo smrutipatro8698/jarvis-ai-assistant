@@ -1,4 +1,5 @@
 import { useRef, useCallback, useState, useEffect } from 'react';
+import { CloudCapture } from '../audio/cloudCapture';
 
 interface SpeechRecognitionEvent {
   resultIndex: number;
@@ -46,8 +47,18 @@ declare global {
  * and race-free. The only place we (re)start recognition is Chrome's own
  * `onend` (Chrome ends the session periodically), and that restart preserves
  * whatever mode we're in — so a multi-turn conversation never loses the mic.
+ *
+ * ── Cloud STT ──────────────────────────────────────────────────────────────
+ * When the server reports STT mode 'server' (Soniox / AssemblyAI), the WAKE
+ * WORD is still detected locally by the free Web Speech API — but the actual
+ * COMMAND is captured by streaming microphone PCM to the server's cloud
+ * recognizer (via the cloudTransport passed in options). The command text and
+ * the semantic end-of-turn then come from the cloud, not from Web Speech. We
+ * only open the cloud mic during a command window, so we never bill silence.
+ * In 'browser' mode (the default) nothing streams and Web Speech does it all.
  */
 export type ConvState = 'off' | 'idle' | 'capturing' | 'muted';
+export type SttMode = 'browser' | 'server';
 
 const WAKE_PHRASES = [
   'hey jarvis',
@@ -73,14 +84,24 @@ function findWakePhrase(text: string): string | null {
   return null;
 }
 
+// Transport the hook uses to stream audio to a cloud recognizer (server mode).
+// Supplied by App, backed by the WebSocket connection.
+export interface CloudTransport {
+  start: () => void; // open a cloud session (server-side)
+  stop: () => void; // close it
+  sendAudio: (frame: ArrayBuffer) => void; // stream one PCM frame
+}
+
 export interface SpeechOptions {
   onWake?: () => void;
   onCommand?: (text: string) => void;
+  cloudTransport?: CloudTransport;
 }
 
 export interface UseSpeechRecognitionReturn {
   isSupported: boolean;
   mode: ConvState;
+  sttMode: SttMode;
   transcript: string;
   /** Start persistent listening in wake-word mode. */
   start: () => void;
@@ -92,6 +113,13 @@ export interface UseSpeechRecognitionReturn {
   setMuted: (muted: boolean) => void;
   /** Fully stop and release the mic. */
   stopAll: () => void;
+  // ── Cloud STT result ingestion (server mode; fed from the WebSocket) ──
+  /** Interim transcript from the cloud recognizer. */
+  ingestPartial: (text: string) => void;
+  /** The cloud recognizer's semantic end-of-turn: this is the command. */
+  ingestTurnEnd: (text: string) => void;
+  /** The cloud recognizer errored; bail back to wake-word listening. */
+  ingestError: (message: string) => void;
 }
 
 export function useSpeechRecognition(options: SpeechOptions = {}): UseSpeechRecognitionReturn {
@@ -103,15 +131,21 @@ export function useSpeechRecognition(options: SpeechOptions = {}): UseSpeechReco
   const isSupported = !!SpeechRecognitionAPI;
 
   const [mode, setModeState] = useState<ConvState>('off');
+  const [sttMode, setSttMode] = useState<SttMode>('browser');
   const [transcript, setTranscript] = useState('');
 
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const wantListeningRef = useRef(false); // desired state: should the mic be on?
   const runningRef = useRef(false); // actual state: is recognition running?
   const convStateRef = useRef<ConvState>('off');
-  const capturedRef = useRef(''); // accumulated FINAL text for current command
+  const capturedRef = useRef(''); // accumulated FINAL text for current command (browser mode)
   const interimRef = useRef(''); // latest interim (fallback when Chrome never finalizes)
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cloud STT (server mode) state.
+  const sttModeRef = useRef<SttMode>('browser');
+  const cloudCaptureRef = useRef<CloudCapture | null>(null);
+  const cloudTextRef = useRef(''); // latest transcript from the cloud recognizer
 
   // Keep latest callbacks in a ref so the (long-lived) recognition handlers
   // always call the current versions without needing to be re-created.
@@ -130,12 +164,46 @@ export function useSpeechRecognition(options: SpeechOptions = {}): UseSpeechReco
     }
   }, []);
 
+  // Open the cloud mic + session for a command window (server mode only).
+  const startCloudCapture = useCallback(() => {
+    const transport = optsRef.current.cloudTransport;
+    if (!transport) {
+      console.warn('[Jarvis] Server STT mode but no cloudTransport provided');
+      return;
+    }
+    cloudTextRef.current = '';
+    transport.start(); // ask the server to open the recognizer session
+    if (!cloudCaptureRef.current) {
+      cloudCaptureRef.current = new CloudCapture((frame) => {
+        optsRef.current.cloudTransport?.sendAudio(frame);
+      });
+    }
+    void cloudCaptureRef.current.start().catch((e) => {
+      console.error('[Jarvis] Cloud capture failed to start:', e);
+    });
+  }, []);
+
+  // Close the cloud mic + session.
+  const stopCloudCapture = useCallback(() => {
+    if (cloudCaptureRef.current) {
+      void cloudCaptureRef.current.stop();
+    }
+    optsRef.current.cloudTransport?.stop();
+  }, []);
+
   // Finalize whatever command we've captured and return to wake-word listening.
   const finalize = useCallback(() => {
     clearSilence();
-    const text = (capturedRef.current.trim() || interimRef.current.trim()).trim();
+    let text: string;
+    if (sttModeRef.current === 'server') {
+      text = cloudTextRef.current.trim();
+      stopCloudCapture();
+    } else {
+      text = (capturedRef.current.trim() || interimRef.current.trim()).trim();
+    }
     capturedRef.current = '';
     interimRef.current = '';
+    cloudTextRef.current = '';
     setTranscript('');
     setConvState('idle');
     if (text) {
@@ -144,7 +212,7 @@ export function useSpeechRecognition(options: SpeechOptions = {}): UseSpeechReco
     } else {
       console.log('[Jarvis] Command window closed with no speech — back to wake word');
     }
-  }, [clearSilence, setConvState]);
+  }, [clearSilence, setConvState, stopCloudCapture]);
 
   const armSilence = useCallback(
     (ms: number) => {
@@ -152,6 +220,46 @@ export function useSpeechRecognition(options: SpeechOptions = {}): UseSpeechReco
       silenceTimerRef.current = setTimeout(finalize, ms);
     },
     [clearSilence, finalize]
+  );
+
+  // ── Cloud STT result ingestion (server mode) ────────────────────────────
+  const ingestPartial = useCallback(
+    (text: string) => {
+      if (sttModeRef.current !== 'server') return;
+      if (convStateRef.current !== 'capturing') return;
+      if (!text) return;
+      cloudTextRef.current = text;
+      setTranscript(text);
+      // Cloud speech resets the silence countdown, same as local speech would.
+      armSilence(SILENCE_MS);
+    },
+    [armSilence]
+  );
+
+  const ingestTurnEnd = useCallback(
+    (text: string) => {
+      if (sttModeRef.current !== 'server') return;
+      if (convStateRef.current !== 'capturing') return;
+      if (text) cloudTextRef.current = text;
+      console.log('[Jarvis] Cloud end-of-turn');
+      finalize();
+    },
+    [finalize]
+  );
+
+  const ingestError = useCallback(
+    (message: string) => {
+      if (sttModeRef.current !== 'server') return;
+      console.warn('[Jarvis] Cloud STT error — returning to wake word:', message);
+      stopCloudCapture();
+      clearSilence();
+      capturedRef.current = '';
+      interimRef.current = '';
+      cloudTextRef.current = '';
+      setTranscript('');
+      setConvState('idle');
+    },
+    [stopCloudCapture, clearSilence, setConvState]
   );
 
   // Lazily build the single recognition instance. Handlers read refs, so this
@@ -222,20 +330,34 @@ export function useSpeechRecognition(options: SpeechOptions = {}): UseSpeechReco
         const phrase = findWakePhrase(combined);
         if (phrase) {
           console.log('[Jarvis] Wake word detected in:', JSON.stringify(combined));
-          // If the user ran the wake word into their command
-          // ("hey jarvis what's the weather"), keep the remainder.
-          const lower = combined.toLowerCase();
-          const rest = combined.slice(lower.indexOf(phrase) + phrase.length).trim();
-          capturedRef.current = rest;
-          interimRef.current = '';
-          setTranscript(rest);
           setConvState('capturing');
           optsRef.current.onWake?.();
-          // If they already started the command, use the short silence gap;
-          // otherwise give them the full grace window to begin.
-          armSilence(rest ? SILENCE_MS : GRACE_MS);
+
+          if (sttModeRef.current === 'server') {
+            // Cloud mode: hand the command off to the cloud recognizer. We
+            // ignore the Web Speech remainder — the cloud hears the command
+            // itself from here — and give a full grace window to start.
+            capturedRef.current = '';
+            interimRef.current = '';
+            cloudTextRef.current = '';
+            setTranscript('');
+            startCloudCapture();
+            armSilence(GRACE_MS);
+          } else {
+            // Browser mode: keep any words the user ran into the wake phrase
+            // ("hey jarvis what's the weather").
+            const lower = combined.toLowerCase();
+            const rest = combined.slice(lower.indexOf(phrase) + phrase.length).trim();
+            capturedRef.current = rest;
+            interimRef.current = '';
+            setTranscript(rest);
+            armSilence(rest ? SILENCE_MS : GRACE_MS);
+          }
         }
       } else if (state === 'capturing') {
+        // In server mode the cloud recognizer is authoritative; drop the local
+        // Web Speech results so we don't double-transcribe.
+        if (sttModeRef.current === 'server') return;
         if (final) {
           capturedRef.current = (capturedRef.current + ' ' + final).trim();
         }
@@ -248,7 +370,7 @@ export function useSpeechRecognition(options: SpeechOptions = {}): UseSpeechReco
 
     recognitionRef.current = rec;
     return rec;
-  }, [SpeechRecognitionAPI, armSilence, setConvState]);
+  }, [SpeechRecognitionAPI, armSilence, setConvState, startCloudCapture]);
 
   const kick = useCallback(() => {
     const rec = ensureRecognition();
@@ -275,19 +397,23 @@ export function useSpeechRecognition(options: SpeechOptions = {}): UseSpeechReco
   }, [SpeechRecognitionAPI, clearSilence, setConvState, kick]);
 
   const beginCommandCapture = useCallback(() => {
-    if (!SpeechRecognitionAPI) return;
     console.log('[Jarvis] beginCommandCapture() — opening command window');
     wantListeningRef.current = true;
     clearSilence();
     capturedRef.current = '';
     interimRef.current = '';
+    cloudTextRef.current = '';
     setTranscript('');
     setConvState('capturing');
-    kick();
+    if (sttModeRef.current === 'server') {
+      startCloudCapture();
+    } else {
+      kick();
+    }
     // Give the user the full grace window to start speaking; real speech
-    // will shorten this to SILENCE_MS via armSilence in onresult.
+    // will shorten this to SILENCE_MS via armSilence.
     armSilence(GRACE_MS);
-  }, [SpeechRecognitionAPI, clearSilence, setConvState, kick, armSilence]);
+  }, [clearSilence, setConvState, kick, armSilence, startCloudCapture]);
 
   const finishCommandCapture = useCallback(() => {
     if (convStateRef.current === 'capturing') finalize();
@@ -298,30 +424,36 @@ export function useSpeechRecognition(options: SpeechOptions = {}): UseSpeechReco
       if (muted) {
         console.log('[Jarvis] Muting (results dropped) — mic stays alive');
         clearSilence();
+        // If a cloud command window was open, close it — TTS is about to play.
+        if (sttModeRef.current === 'server') stopCloudCapture();
         capturedRef.current = '';
         interimRef.current = '';
+        cloudTextRef.current = '';
         setConvState('muted');
-        // Deliberately do NOT stop the recognition — keeping the stream alive
-        // is what makes the next turn work reliably.
+        // Deliberately do NOT stop the local recognition — keeping the stream
+        // alive is what makes the next turn's wake word work reliably.
       } else {
         console.log('[Jarvis] Unmuting — back to wake-word listening');
         clearSilence();
         capturedRef.current = '';
         interimRef.current = '';
+        cloudTextRef.current = '';
         setTranscript('');
         setConvState('idle');
         kick(); // in case Chrome ended the stream while muted
       }
     },
-    [clearSilence, setConvState, kick]
+    [clearSilence, setConvState, kick, stopCloudCapture]
   );
 
   const stopAll = useCallback(() => {
     console.log('[Jarvis] stopAll() — releasing mic');
     wantListeningRef.current = false;
     clearSilence();
+    stopCloudCapture();
     capturedRef.current = '';
     interimRef.current = '';
+    cloudTextRef.current = '';
     setTranscript('');
     setConvState('off');
     if (recognitionRef.current) {
@@ -332,13 +464,34 @@ export function useSpeechRecognition(options: SpeechOptions = {}): UseSpeechReco
       }
     }
     runningRef.current = false;
-  }, [clearSilence, setConvState]);
+  }, [clearSilence, setConvState, stopCloudCapture]);
+
+  // Ask the server which STT mode is active (browser vs a cloud recognizer).
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/stt-config')
+      .then((r) => r.json())
+      .then((cfg) => {
+        if (cancelled) return;
+        const m: SttMode = cfg?.mode === 'server' ? 'server' : 'browser';
+        sttModeRef.current = m;
+        setSttMode(m);
+        console.log('[Jarvis] STT mode:', m, '| provider:', cfg?.provider);
+      })
+      .catch((e) => {
+        console.warn('[Jarvis] Could not fetch STT config, defaulting to browser:', e);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Cleanup on unmount.
   useEffect(() => {
     return () => {
       wantListeningRef.current = false;
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      if (cloudCaptureRef.current) void cloudCaptureRef.current.stop();
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort();
@@ -352,11 +505,15 @@ export function useSpeechRecognition(options: SpeechOptions = {}): UseSpeechReco
   return {
     isSupported,
     mode,
+    sttMode,
     transcript,
     start,
     beginCommandCapture,
     finishCommandCapture,
     setMuted,
     stopAll,
+    ingestPartial,
+    ingestTurnEnd,
+    ingestError,
   };
 }

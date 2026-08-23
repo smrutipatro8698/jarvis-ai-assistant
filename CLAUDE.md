@@ -29,8 +29,35 @@
   so provider choice never touches the conversation logic.
 - If synthesis fails, the server falls back to browser mode so Jarvis still talks.
 
+## Speech-to-text (swappable providers)
+
+- STT backends sit behind one `STTProvider` interface in `server/src/stt/`.
+  Switch recognizers with the `STT_PROVIDER` env var — no other code changes.
+  - `browser` (default): free, recognition runs in the client via the Web
+    Speech API. No key, no audio leaves the browser.
+  - `soniox`: best-value cloud recognizer, strong on accented English. Needs
+    `SONIOX_API_KEY` (+ optional `SONIOX_MODEL`).
+  - `assemblyai`: strong alternative with an explicit turn model. Needs
+    `ASSEMBLYAI_API_KEY`. Bake it off against Soniox on your own voice.
+- The wake word ("Hey Jarvis") is ALWAYS detected locally by the Web Speech API,
+  in every mode — it's free and instant. In server mode, only the COMMAND is
+  streamed to the cloud recognizer, and only while a command window is open, so
+  we never bill silence.
+- Audio path (server mode): the client captures the mic, an AudioWorklet
+  (`client/public/pcm-worklet.js`) resamples it to 16 kHz PCM16, and
+  `client/src/audio/cloudCapture.ts` streams frames over the WebSocket as binary.
+  The server (`server/src/index.ts`) proxies them to the provider's streaming
+  socket and sends transcripts back as `stt_partial` / `stt_turn_end` messages.
+  The client learns which mode is active from `GET /api/stt-config`.
+- To add a provider: implement `STTProvider` in `server/src/stt/<name>.ts` and
+  register it in `server/src/stt/index.ts`. Cloud providers implement a
+  streaming `createSession`; browser mode has none.
+- If a cloud session errors, the speech hook returns to wake-word listening so
+  Jarvis stays usable.
+
 ## Roadmap
 
-- STT is still the browser Web Speech API (`client/src/hooks/useSpeechRecognition.ts`).
-  Next phase: a swappable STT layer (Soniox / AssemblyAI) with AudioWorklet mic
-  capture streamed to the server, mirroring the TTS provider pattern.
+- Both the voice (TTS) and the ears (STT) are now swappable behind one env var
+  each, defaulting to the free browser engines. Possible next steps: a local
+  wake-word engine (e.g. Porcupine) to drop the Web Speech dependency entirely,
+  and streaming TTS for lower latency on long replies.

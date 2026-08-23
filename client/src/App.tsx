@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { HUDLayout } from './components/HUDLayout';
 import { JarvisOrb } from './components/JarvisOrb';
 import type { OrbState } from './components/JarvisOrb';
@@ -69,9 +69,21 @@ export default function App() {
     setCurrentTranscript('');
   }, [tts]);
 
+  // Transport the speech hook uses to stream mic audio to the server's cloud
+  // recognizer (server STT mode only). Backed by the WebSocket connection.
+  const cloudTransport = useMemo(
+    () => ({
+      start: ws.sttStart,
+      stop: ws.sttStop,
+      sendAudio: ws.sendAudio,
+    }),
+    [ws.sttStart, ws.sttStop, ws.sendAudio]
+  );
+
   const speech = useSpeechRecognition({
     onWake: handleWake,
     onCommand: (text) => processCommandRef.current(text),
+    cloudTransport,
   });
   const speechRef = useRef(speech);
   speechRef.current = speech;
@@ -161,6 +173,12 @@ export default function App() {
     ws.onAudio(({ audioBase64, mimeType }) => {
       tts.playServerAudio(audioBase64, mimeType);
     });
+
+    // Cloud STT results (server mode). Feed them into the speech hook, which
+    // owns the conversation state machine and turns end-of-turn into a command.
+    ws.onSttPartial((text) => speechRef.current.ingestPartial(text));
+    ws.onSttTurnEnd((text) => speechRef.current.ingestTurnEnd(text));
+    ws.onSttError((message) => speechRef.current.ingestError(message));
 
     ws.onToolResult((result: unknown) => {
       const toolResult = result as ToolResult;

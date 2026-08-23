@@ -27,6 +27,16 @@ export interface UseWebSocketReturn {
   onAudio: (callback: CallbackFn<AudioPayload>) => void;
   onToolResult: (callback: CallbackFn<unknown>) => void;
   onError: (callback: CallbackFn<string>) => void;
+  // ── Cloud STT transport (server STT mode only) ──────────────────────
+  /** Ask the server to open a cloud recognition session for this turn. */
+  sttStart: () => void;
+  /** Tell the server the turn is over; it flushes + closes the session. */
+  sttStop: () => void;
+  /** Stream a frame of 16 kHz PCM16 audio up to the active session. */
+  sendAudio: (frame: ArrayBuffer) => void;
+  onSttPartial: (callback: CallbackFn<string>) => void;
+  onSttTurnEnd: (callback: CallbackFn<string>) => void;
+  onSttError: (callback: CallbackFn<string>) => void;
 }
 
 const MAX_RECONNECT_DELAY = 30000;
@@ -60,6 +70,9 @@ export function useWebSocket(): UseWebSocketReturn {
   const onAudioRef = useRef<CallbackFn<AudioPayload> | null>(null);
   const onToolResultRef = useRef<CallbackFn<unknown> | null>(null);
   const onErrorRef = useRef<CallbackFn<string> | null>(null);
+  const onSttPartialRef = useRef<CallbackFn<string> | null>(null);
+  const onSttTurnEndRef = useRef<CallbackFn<string> | null>(null);
+  const onSttErrorRef = useRef<CallbackFn<string> | null>(null);
 
   const cleanup = useCallback(() => {
     if (reconnectTimerRef.current) {
@@ -125,6 +138,15 @@ export function useWebSocket(): UseWebSocketReturn {
           case 'tool_result':
             onToolResultRef.current?.(message.data);
             break;
+          case 'stt_partial':
+            onSttPartialRef.current?.(message.data?.text ?? '');
+            break;
+          case 'stt_turn_end':
+            onSttTurnEndRef.current?.(message.data?.text ?? '');
+            break;
+          case 'stt_error':
+            onSttErrorRef.current?.(message.data?.message ?? 'STT error');
+            break;
           case 'error':
             onErrorRef.current?.(message.data?.message ?? 'Unknown error');
             break;
@@ -180,6 +202,38 @@ export function useWebSocket(): UseWebSocketReturn {
     }
   }, []);
 
+  const sttStart = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'stt_start' }));
+      console.log('[Jarvis] stt_start sent');
+    }
+  }, []);
+
+  const sttStop = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'stt_stop' }));
+      console.log('[Jarvis] stt_stop sent');
+    }
+  }, []);
+
+  const sendAudio = useCallback((frame: ArrayBuffer) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(frame);
+    }
+  }, []);
+
+  const onSttPartial = useCallback((callback: CallbackFn<string>) => {
+    onSttPartialRef.current = callback;
+  }, []);
+
+  const onSttTurnEnd = useCallback((callback: CallbackFn<string>) => {
+    onSttTurnEndRef.current = callback;
+  }, []);
+
+  const onSttError = useCallback((callback: CallbackFn<string>) => {
+    onSttErrorRef.current = callback;
+  }, []);
+
   const onChunk = useCallback((callback: CallbackFn<string>) => {
     onChunkRef.current = callback;
   }, []);
@@ -208,5 +262,11 @@ export function useWebSocket(): UseWebSocketReturn {
     onAudio,
     onToolResult,
     onError,
+    sttStart,
+    sttStop,
+    sendAudio,
+    onSttPartial,
+    onSttTurnEnd,
+    onSttError,
   };
 }
