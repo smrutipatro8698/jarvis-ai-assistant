@@ -21,13 +21,23 @@
   - `cartesia`: cheap, low-latency real voice. Needs `CARTESIA_API_KEY` + `CARTESIA_VOICE_ID`.
   - `elevenlabs`: premium characterful voice. Needs `ELEVENLABS_API_KEY` (+ optional `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL`).
 - To add a provider: implement `TTSProvider` in `server/src/tts/<name>.ts` and
-  register it in `server/src/tts/index.ts`. Cloud providers return base64 audio;
-  the server streams it over WS as a `tts_audio` message and marks
-  `assistant_complete` with `ttsMode: 'server'`.
-- Client side: `client/src/hooks/useTextToSpeech.ts` plays server audio or falls
-  back to browser speech. `isSpeaking` drives echo-mute + the follow-up window,
-  so provider choice never touches the conversation logic.
-- If synthesis fails, the server falls back to browser mode so Jarvis still talks.
+  register it in `server/src/tts/index.ts`. Cloud providers return base64 audio.
+- Streaming synthesis (cloud modes): the server (`server/src/index.ts`) breaks
+  the reply into sentence-sized chunks AS Claude streams it (`makeSentenceChunker`,
+  min size `TTS_CHUNK_MIN_CHARS`, default 100), synthesizes each chunk serially,
+  and sends each as its own `tts_audio` WS message. So Jarvis starts speaking in
+  near-real-time and long answers are read in FULL (no length cap / timeout — each
+  chunk is small). `assistant_complete` carries `ttsMode: 'server'` once any audio
+  was sent. Cloud TTS bills per character, so the server logs the running
+  character total after each reply for cost visibility.
+- Client side: `client/src/hooks/useTextToSpeech.ts` queues the incoming audio
+  chunks and plays them in order (`enqueueServerAudio`), staying `isSpeaking` true
+  across the gaps between chunks until the server signals the reply is done
+  (`endServerStream`, fired from `assistant_complete`). `isSpeaking` drives
+  echo-mute + the follow-up window, so provider choice never touches the
+  conversation logic. Browser mode still speaks the full text locally.
+- If every chunk fails to synthesize, the server sends `ttsMode: 'browser'` so the
+  client speaks the full text with the free browser voice as a fallback.
 
 ## Speech-to-text (swappable providers)
 
@@ -62,6 +72,8 @@
 ## Roadmap
 
 - Both the voice (TTS) and the ears (STT) are now swappable behind one env var
-  each, defaulting to the free browser engines. Possible next steps: a local
-  wake-word engine (e.g. Porcupine) to drop the Web Speech dependency entirely,
-  and streaming TTS for lower latency on long replies.
+  each, defaulting to the free browser engines. Streaming TTS (speak each
+  sentence as Claude writes it) is done. Possible next steps: a local wake-word
+  engine (e.g. Porcupine) to drop the Web Speech dependency entirely; a hard
+  per-period TTS spend budget with browser-voice fallback; cloud hosting for an
+  always-on backend.

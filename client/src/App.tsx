@@ -164,17 +164,22 @@ export default function App() {
       ]);
 
       setOrbState('speaking');
-      // Server mode: audio already arrived (or will) via onAudio and is playing.
-      // Browser mode: speak the text locally with the Web Speech API.
+      // Server mode: audio chunks streamed in via onAudio during generation and
+      // are playing; signal that no more are coming so playback finishes cleanly.
+      // Browser mode: speak the full text locally with the Web Speech API.
       if (ttsMode === 'browser') {
         tts.speak(text);
+      } else {
+        tts.endServerStream();
       }
     });
 
-    // Server-synthesized audio (ElevenLabs / Cartesia). Play it back; this sets
-    // tts.isSpeaking, which drives the same echo-mute + follow-up behavior.
+    // Server-synthesized audio chunks (Cartesia / ElevenLabs). They arrive
+    // sentence-by-sentence during generation; queue them for in-order playback.
+    // This keeps tts.isSpeaking true across the whole reply, which drives the
+    // same echo-mute + follow-up behavior.
     ws.onAudio(({ audioBase64, mimeType }) => {
-      tts.playServerAudio(audioBase64, mimeType);
+      tts.enqueueServerAudio(audioBase64, mimeType);
     });
 
     // Cloud STT results (server mode). Feed them into the speech hook, which

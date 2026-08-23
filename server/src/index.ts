@@ -11,27 +11,57 @@ import { getSTTProvider, STTSession } from './stt';
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Longest reply we send to a cloud TTS engine. Long text is the main cause of
-// synthesis failures (provider length caps, or non-streaming generation blowing
-// past the request timeout) — and a multi-minute spoken monologue is poor UX for
-// a voice assistant anyway. We speak a concise version and still show the FULL
-// answer on screen. Tune or disable (0 = no cap) with TTS_MAX_CHARS.
-const TTS_MAX_CHARS = parseInt(process.env.TTS_MAX_CHARS || '700', 10);
+// We stream the reply to the cloud TTS provider sentence-by-sentence as Claude
+// writes it, instead of synthesizing the whole answer in one shot. Two wins:
+//   1. Jarvis starts speaking almost immediately (first sentence, ~real time)
+//      rather than after the entire paragraph is written and synthesized.
+//   2. Long replies are read IN FULL and never fail — each chunk is small, so
+//      we never hit a provider length cap or a single-request timeout (the two
+//      things that were killing long answers before).
+// Chunks are grouped to at least this many chars so we aren't firing a separate
+// TTS request per tiny sentence (extra latency + per-request overhead).
+const TTS_CHUNK_MIN_CHARS = parseInt(process.env.TTS_CHUNK_MIN_CHARS || '100', 10);
 
-// Trim text to at most `max` chars, preferring the last sentence end so speech
-// never cuts off mid-word. Returns the whole string when it's already short
-// enough or the cap is disabled.
-function trimForSpeech(text: string, max: number): string {
-  if (max <= 0 || text.length <= max) return text;
-  const slice = text.slice(0, max);
-  const sentenceEnd = Math.max(
-    slice.lastIndexOf('. '),
-    slice.lastIndexOf('! '),
-    slice.lastIndexOf('? ')
-  );
-  if (sentenceEnd > max * 0.5) return text.slice(0, sentenceEnd + 1).trim();
-  const wordEnd = slice.lastIndexOf(' ');
-  return (wordEnd > 0 ? text.slice(0, wordEnd) : slice).trim();
+// Running total of characters sent to the cloud TTS this process, logged after
+// every reply so per-character spend stays visible (Cartesia bills per char).
+// Resets on restart — a visibility aid, not a hard budget.
+let ttsCharsThisProcess = 0;
+
+// Index just past the last sentence end (". "/"! "/"? "/newline/end-of-text) in
+// `s`, or -1 if there's no complete sentence yet.
+function lastSentenceBoundary(s: string): number {
+  let idx = -1;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '.' || c === '!' || c === '?' || c === '\n') {
+      const next = s[i + 1];
+      if (next === undefined || next === ' ' || next === '\n') idx = i + 1;
+    }
+  }
+  return idx;
+}
+
+// Accumulates streamed text deltas and emits speakable chunks: at least `min`
+// chars, cut at a sentence boundary so speech never breaks mid-sentence.
+// flush() emits whatever's left (the final partial sentence).
+function makeSentenceChunker(min: number, emit: (chunk: string) => void) {
+  let buf = '';
+  return {
+    push(delta: string) {
+      buf += delta;
+      const b = lastSentenceBoundary(buf);
+      if (b >= min) {
+        const chunk = buf.slice(0, b).trim();
+        buf = buf.slice(b);
+        if (chunk) emit(chunk);
+      }
+    },
+    flush() {
+      const chunk = buf.trim();
+      buf = '';
+      if (chunk) emit(chunk);
+    },
+  };
 }
 
 app.use(cors());
@@ -149,41 +179,63 @@ wss.on('connection', (ws: WebSocket) => {
       const userText = message.data.text;
       sendMessage('status', { message: 'Processing your request...' });
 
+      // Cloud TTS providers get the reply streamed to them sentence-by-sentence
+      // as Claude writes it (see makeSentenceChunker): Jarvis starts speaking in
+      // near-real-time and long answers are read in full without length/timeout
+      // failures. 'browser' mode synthesizes nothing here — the client speaks
+      // the full text locally once it arrives.
+      const tts = getTTSProvider();
+      const serverTTS = tts.producesAudio;
+      let ttsMode: 'browser' | 'server' = 'browser';
+      let sentAnyAudio = false;
+      let charsThisReply = 0;
+
+      // Synthesize chunks strictly in order (serial chain) so the audio the
+      // client receives — and plays — is in the same order Claude wrote it.
+      let synthChain: Promise<void> = Promise.resolve();
+      const enqueueSynth = (chunk: string) => {
+        charsThisReply += chunk.length;
+        synthChain = synthChain.then(async () => {
+          try {
+            const result = await tts.synthesize(chunk);
+            if (result.mode === 'server' && result.audioBase64) {
+              sentAnyAudio = true;
+              sendMessage('tts_audio', {
+                audioBase64: result.audioBase64,
+                mimeType: result.mimeType || 'audio/mpeg',
+              });
+            }
+          } catch (ttsErr: any) {
+            console.error(`[J.A.R.V.I.S.] TTS chunk failed (${tts.name}, ${chunk.length} chars):`, ttsErr?.message || ttsErr);
+          }
+        });
+      };
+      const chunker = serverTTS ? makeSentenceChunker(TTS_CHUNK_MIN_CHARS, enqueueSynth) : null;
+
       const { text } = await processMessage(
         userText,
         conversationHistory,
         (chunk) => {
           sendMessage('assistant_chunk', { text: chunk });
+          chunker?.push(chunk);
         },
         (toolResult) => {
           sendMessage('tool_result', toolResult);
         }
       );
 
-      // Synthesize the reply through whichever TTS provider is configured.
-      // 'browser' mode returns no audio and the client speaks it locally;
-      // cloud providers return audio the client plays back. If synthesis
-      // fails, fall back to browser mode so Jarvis still talks.
-      const tts = getTTSProvider();
-      let ttsMode: 'browser' | 'server' = 'browser';
-      // Speak a concise version; the full `text` still goes to the screen below.
-      const spokenText = trimForSpeech(text, TTS_MAX_CHARS);
-      if (spokenText.length < text.length) {
-        console.log(`[J.A.R.V.I.S.] Trimmed spoken text for TTS: ${text.length} -> ${spokenText.length} chars (full reply still shown on screen)`);
-      }
-      try {
-        const result = await tts.synthesize(spokenText);
-        ttsMode = result.mode;
-        if (result.mode === 'server' && result.audioBase64) {
-          console.log(`[J.A.R.V.I.S.] Sending server TTS audio (${tts.name}), base64 len: ${result.audioBase64.length}`);
-          sendMessage('tts_audio', {
-            audioBase64: result.audioBase64,
-            mimeType: result.mimeType || 'audio/mpeg',
-          });
+      if (chunker) {
+        chunker.flush();
+        await synthChain; // let every chunk finish synthesizing + sending, in order
+        if (sentAnyAudio) {
+          ttsMode = 'server';
+          ttsCharsThisProcess += charsThisReply;
+          console.log(`[J.A.R.V.I.S.] TTS spoke ${charsThisReply} chars via ${tts.name} (session total: ${ttsCharsThisProcess})`);
+        } else {
+          // Nothing synthesized (all chunks failed, or empty reply) — let the
+          // client speak the full text with the free browser voice as a fallback.
+          console.warn(`[J.A.R.V.I.S.] No ${tts.name} audio produced — client will fall back to browser voice`);
         }
-      } catch (ttsErr: any) {
-        console.error(`[J.A.R.V.I.S.] TTS synthesis failed (${tts.name}, ${spokenText.length} chars), falling back to browser voice:`, ttsErr?.message || ttsErr);
-        ttsMode = 'browser';
       }
 
       sendMessage('assistant_complete', { text, ttsMode });

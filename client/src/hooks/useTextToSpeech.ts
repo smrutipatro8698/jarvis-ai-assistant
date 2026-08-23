@@ -17,8 +17,12 @@ export interface VoiceOption {
 export interface UseTextToSpeechReturn {
   // Browser mode: speak text with the Web Speech API.
   speak: (text: string) => void;
-  // Server mode: play synthesized audio (base64) from the active TTS provider.
-  playServerAudio: (audioBase64: string, mimeType: string) => void;
+  // Server mode: queue a synthesized audio chunk (base64) from the active TTS
+  // provider. Chunks stream in during generation and play back in order.
+  enqueueServerAudio: (audioBase64: string, mimeType: string) => void;
+  // Server mode: the server has finished sending chunks for this reply. Once the
+  // queue drains, isSpeaking flips false (which opens the follow-up window).
+  endServerStream: () => void;
   stop: () => void;
   isSpeaking: boolean;
   isSupported: boolean;
@@ -50,6 +54,15 @@ export function useTextToSpeech(): UseTextToSpeechReturn {
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
+  // Server-mode playback queue. Chunks arrive during generation; we play them
+  // one at a time, in order. streamActive = a reply is in progress; streamEnded
+  // = server has sent its last chunk. We keep isSpeaking true across the gaps
+  // between chunks (queue momentarily empty but more coming) so the echo-mute
+  // and follow-up window never fire in the middle of a reply.
+  const queueRef = useRef<Array<{ base64: string; mime: string }>>([]);
+  const playingRef = useRef(false);
+  const streamActiveRef = useRef(false);
+  const streamEndedRef = useRef(false);
 
   // Load Web Speech voices for browser mode (also used by the VoicePicker).
   useEffect(() => {
@@ -94,6 +107,10 @@ export function useTextToSpeech(): UseTextToSpeechReturn {
       window.speechSynthesis.cancel();
       utteranceRef.current = null;
     }
+    queueRef.current = [];
+    playingRef.current = false;
+    streamActiveRef.current = false;
+    streamEndedRef.current = false;
     cleanupAudio();
     setIsSpeaking(false);
   }, [speechSupported, cleanupAudio]);
@@ -126,47 +143,73 @@ export function useTextToSpeech(): UseTextToSpeechReturn {
     [speechSupported, selectedVoice, cleanupAudio]
   );
 
-  const playServerAudio = useCallback(
+  // Play the next queued chunk. When the queue empties, only truly stop if the
+  // server has signalled the reply is complete; otherwise more chunks are still
+  // in flight, so we stay "speaking" and wait.
+  const playNext = useCallback(() => {
+    const next = queueRef.current.shift();
+    if (!next) {
+      playingRef.current = false;
+      if (streamEndedRef.current) {
+        streamActiveRef.current = false;
+        cleanupAudio();
+        setIsSpeaking(false);
+      }
+      return;
+    }
+    playingRef.current = true;
+    cleanupAudio(); // release the previous chunk's element/URL
+    try {
+      const bytes = Uint8Array.from(atob(next.base64), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: next.mime });
+      const url = URL.createObjectURL(blob);
+      audioUrlRef.current = url;
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => playNext();
+      audio.onerror = () => {
+        console.error('[TTS] Server audio chunk playback error — skipping to next');
+        playNext();
+      };
+      void audio.play().catch((e) => {
+        console.error('[TTS] audio.play() rejected:', e);
+        playNext();
+      });
+    } catch (e) {
+      console.error('[TTS] Failed to decode/play server audio chunk:', e);
+      playNext();
+    }
+  }, [cleanupAudio]);
+
+  const enqueueServerAudio = useCallback(
     (audioBase64: string, mimeType: string) => {
       if (!audioBase64) return;
-      console.log('[TTS] Playing server audio, mime:', mimeType, 'base64 len:', audioBase64.length);
-      // Stop any in-flight speech/audio first.
-      if (speechSupported) window.speechSynthesis.cancel();
-      cleanupAudio();
-
-      try {
-        const bytes = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0));
-        const blob = new Blob([bytes], { type: mimeType });
-        const url = URL.createObjectURL(blob);
-        audioUrlRef.current = url;
-        const audio = new Audio(url);
-        audioRef.current = audio;
-        audio.onplay = () => setIsSpeaking(true);
-        audio.onended = () => {
-          setIsSpeaking(false);
-          cleanupAudio();
-        };
-        audio.onerror = () => {
-          console.error('[TTS] Server audio playback error');
-          setIsSpeaking(false);
-          cleanupAudio();
-        };
-        // Some browsers need isSpeaking set before the async play resolves so the
-        // echo-mute fires immediately.
-        setIsSpeaking(true);
-        void audio.play().catch((e) => {
-          console.error('[TTS] audio.play() rejected:', e);
-          setIsSpeaking(false);
-          cleanupAudio();
-        });
-      } catch (e) {
-        console.error('[TTS] Failed to decode/play server audio:', e);
-        setIsSpeaking(false);
-        cleanupAudio();
+      if (!streamActiveRef.current) {
+        // First chunk of a new reply — start a fresh stream.
+        console.log('[TTS] Server audio stream started');
+        streamActiveRef.current = true;
+        streamEndedRef.current = false;
+        queueRef.current = [];
+        if (speechSupported) window.speechSynthesis.cancel();
       }
+      queueRef.current.push({ base64: audioBase64, mime: mimeType });
+      setIsSpeaking(true);
+      if (!playingRef.current) playNext();
     },
-    [speechSupported, cleanupAudio]
+    [speechSupported, playNext]
   );
+
+  const endServerStream = useCallback(() => {
+    console.log('[TTS] Server audio stream ended (queued:', queueRef.current.length, 'playing:', playingRef.current, ')');
+    streamEndedRef.current = true;
+    // If everything already drained, finish now; otherwise playNext() finishes
+    // when the last chunk ends.
+    if (!playingRef.current && queueRef.current.length === 0) {
+      streamActiveRef.current = false;
+      cleanupAudio();
+      setIsSpeaking(false);
+    }
+  }, [cleanupAudio]);
 
   useEffect(() => {
     return () => {
@@ -177,7 +220,8 @@ export function useTextToSpeech(): UseTextToSpeechReturn {
 
   return {
     speak,
-    playServerAudio,
+    enqueueServerAudio,
+    endServerStream,
     stop,
     isSpeaking,
     isSupported: speechSupported,
