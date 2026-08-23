@@ -37,8 +37,12 @@
     Speech API. No key, no audio leaves the browser.
   - `soniox`: best-value cloud recognizer, strong on accented English. Needs
     `SONIOX_API_KEY` (+ optional `SONIOX_MODEL`).
-  - `assemblyai`: strong alternative with an explicit turn model. Needs
-    `ASSEMBLYAI_API_KEY`. Bake it off against Soniox on your own voice.
+  - `assemblyai`: cloud recognizer with an explicit turn model. Needs
+    `ASSEMBLYAI_API_KEY`. Pins the `universal-3-5-pro` flagship (strong on
+    accented English) via the v3 streaming WebSocket; `mode` (min_latency /
+    balanced / max_accuracy) is the primary tuning knob. Optional overrides:
+    `ASSEMBLYAI_MODEL`, `ASSEMBLYAI_MODE`, `ASSEMBLYAI_PROMPT`. The server holds
+    the key and opens the provider socket, so it never reaches the browser.
 - The wake word ("Hey Jarvis") is ALWAYS detected locally by the Web Speech API,
   in every mode — it's free and instant. In server mode, only the COMMAND is
   streamed to the cloud recognizer, and only while a command window is open, so

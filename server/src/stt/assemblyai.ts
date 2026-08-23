@@ -1,18 +1,38 @@
 import WebSocket from 'ws';
 import { STTProvider, STTSession, STTCallbacks } from './types';
 
-// AssemblyAI Universal-Streaming — the strong alternative to Soniox for a
-// cloud recognizer bake-off. ~$0.15/hr streamed, very low latency, and a clean
-// turn model: every message is a "Turn" with an `end_of_turn` flag, so the
-// endpoint is explicit. Good English accuracy; run it against Soniox on your
-// own voice and keep whichever wins on your accent.
+// AssemblyAI Universal-Streaming (v3) — our cloud recognizer. Low latency and a
+// clean turn model: every message is a "Turn" with an `end_of_turn` flag, so
+// the command endpoint is explicit.
 //
-// Protocol (WebSocket v3): connect with the API key in the Authorization
-// header, stream raw PCM binary frames, receive JSON "Turn" messages. Send
-// { type: 'Terminate' } to finish.
+// We pin speech_model=universal-3-5-pro, the current flagship. It transcribes
+// 18 languages natively with code-switching and is strong on accented English —
+// which is the whole reason we route the command to the cloud. `mode` (the
+// primary latency/accuracy knob: min_latency | balanced | max_accuracy) sets
+// sensible turn-detection defaults, so we don't hand-tune silence bounds.
 //
-// Docs: https://www.assemblyai.com/docs/speech-to-text/universal-streaming
+// Protocol: connect with the raw API key in the Authorization header (NO
+// `Bearer` prefix — that's Voice-Agent-only), stream raw PCM16 16 kHz mono
+// binary frames of 50–1000 ms each (our worklet sends ~64 ms), receive JSON
+// "Turn" messages, and send { type: 'Terminate' } to finish (an abandoned
+// session bills until the 3-hour cap). Note: `format_turns` is NOT a U3.5-Pro
+// knob — formatting always tracks `end_of_turn` — so we don't send it.
+//
+// This runs server-side, so the key stays here and never reaches the browser
+// (no temp-token minting needed — that's only for browser-direct connections).
+//
+// Docs: https://www.assemblyai.com/docs/streaming/select-the-speech-model
 const AAI_WS_BASE = 'wss://streaming.assemblyai.com/v3/ws';
+
+// WebSocket close codes worth naming in the logs (see docs §14).
+const CLOSE_CODES: Record<number, string> = {
+  1008: 'unauthorized — check ASSEMBLYAI_API_KEY (no "Bearer" prefix)',
+  3005: 'session cancelled (server-side error)',
+  3006: 'invalid message / JSON',
+  3007: 'audio chunk outside 50–1000 ms or faster than real-time',
+  3008: 'session expired (3-hour cap)',
+  3009: 'too many concurrent sessions',
+};
 
 class AssemblyAISession implements STTSession {
   private ws: WebSocket;
@@ -21,10 +41,19 @@ class AssemblyAISession implements STTSession {
   private pending: Buffer[] = [];
   private stopped = false;
 
-  constructor(apiKey: string, cb: STTCallbacks) {
+  constructor(apiKey: string, cb: STTCallbacks, opts: { model: string; mode: string; prompt: string }) {
     this.cb = cb;
-    const url = `${AAI_WS_BASE}?sample_rate=16000&encoding=pcm_s16le&format_turns=true`;
-    console.log('[STT:assemblyai] Opening session');
+    const params = new URLSearchParams({
+      sample_rate: '16000',
+      encoding: 'pcm_s16le',
+      speech_model: opts.model,
+      mode: opts.mode,
+    });
+    // Optional natural-language steering (domain/scenario/names). Skipped unless
+    // ASSEMBLYAI_PROMPT is set, so the default stays clean.
+    if (opts.prompt) params.set('prompt', opts.prompt);
+    const url = `${AAI_WS_BASE}?${params.toString()}`;
+    console.log(`[STT:assemblyai] Opening session model=${opts.model} mode=${opts.mode}${opts.prompt ? ' (prompt set)' : ''}`);
     this.ws = new WebSocket(url, { headers: { Authorization: apiKey } });
 
     this.ws.on('open', () => {
@@ -69,7 +98,15 @@ class AssemblyAISession implements STTSession {
     });
 
     this.ws.on('close', (code: number) => {
-      console.log('[STT:assemblyai] Socket closed:', code);
+      const reason = CLOSE_CODES[code];
+      console.log(`[STT:assemblyai] Socket closed: ${code}${reason ? ' — ' + reason : ''}`);
+      // A close we didn't initiate (bad key, expired/oversized session, etc.)
+      // is an error — surface it so the client falls back to wake-word listening
+      // instead of silently hanging on a dead session.
+      if (!this.stopped) {
+        this.stopped = true;
+        this.cb.onError(new Error(`AssemblyAI closed session (${code}${reason ? ': ' + reason : ''})`));
+      }
     });
   }
 
@@ -104,16 +141,29 @@ export class AssemblyAISTTProvider implements STTProvider {
   readonly mode = 'server' as const;
 
   private apiKey: string;
+  private model: string;
+  private latencyMode: string;
+  private prompt: string;
 
   constructor() {
     this.apiKey = (process.env.ASSEMBLYAI_API_KEY || '').trim();
+    // universal-3-5-pro is the current flagship; balanced is the recommended
+    // default latency/accuracy preset. Both overridable if you want to tune.
+    this.model = (process.env.ASSEMBLYAI_MODEL || 'universal-3-5-pro').trim();
+    this.latencyMode = (process.env.ASSEMBLYAI_MODE || 'balanced').trim();
+    this.prompt = (process.env.ASSEMBLYAI_PROMPT || '').trim();
     if (!this.apiKey) {
       console.warn('[STT:assemblyai] ASSEMBLYAI_API_KEY is not set — recognition will fail');
     }
+    console.log(`[STT:assemblyai] Configured model=${this.model} mode=${this.latencyMode}`);
   }
 
   createSession(callbacks: STTCallbacks): STTSession {
     if (!this.apiKey) throw new Error('ASSEMBLYAI_API_KEY not configured');
-    return new AssemblyAISession(this.apiKey, callbacks);
+    return new AssemblyAISession(this.apiKey, callbacks, {
+      model: this.model,
+      mode: this.latencyMode,
+      prompt: this.prompt,
+    });
   }
 }
