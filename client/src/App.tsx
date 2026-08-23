@@ -55,7 +55,6 @@ export default function App() {
   const [activated, setActivated] = useState(false);
   const responseBufferRef = useRef('');
   const followUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const speechActiveRef = useRef(false);
 
   const speech = useSpeechRecognition();
   const tts = useSpeechSynthesis();
@@ -89,11 +88,6 @@ export default function App() {
       setOrbState('idle');
     }
   }, [speech.isCapturing, speech.isListening]);
-
-  // Keep speechActiveRef in sync for use inside timers
-  useEffect(() => {
-    speechActiveRef.current = speech.isSpeechActive || !!speech.transcript;
-  }, [speech.isSpeechActive, speech.transcript]);
 
   // Update transcript display — show what mic hears in ALL modes for debugging
   useEffect(() => {
@@ -191,8 +185,8 @@ export default function App() {
       speech.startManualListening();
 
       const closeFollowUp = () => {
-        if (speechActiveRef.current) {
-          console.log('[App] Speech still active, extending follow-up by 3s');
+        if (speech.isProcessingSpeech()) {
+          console.log('[App] Speech still active or has pending text, extending follow-up by 3s');
           followUpTimerRef.current = setTimeout(closeFollowUp, 3000);
           return;
         }

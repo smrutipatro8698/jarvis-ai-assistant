@@ -49,6 +49,7 @@ export interface UseSpeechRecognitionReturn {
   finalTranscript: string;
   wakeWordDetected: boolean;
   isSpeechActive: boolean;
+  isProcessingSpeech: () => boolean;
   startManualListening: () => void;
   stopManualListening: () => void;
   startWakeWordListening: () => void;
@@ -337,6 +338,14 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     setFinalTranscript('');
   }, []);
 
+  const isProcessingSpeech = useCallback(() => {
+    const active = speechActiveRef.current;
+    const hasCaptured = !!(capturedTextRef.current.trim());
+    const hasInterim = !!(latestInterimRef.current.trim());
+    console.log('[Jarvis] isProcessingSpeech check — active:', active, 'captured:', JSON.stringify(capturedTextRef.current), 'interim:', JSON.stringify(latestInterimRef.current));
+    return active || hasCaptured || hasInterim;
+  }, []);
+
   useEffect(() => {
     return () => {
       clearSilenceTimer();
@@ -351,6 +360,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     finalTranscript,
     wakeWordDetected,
     isSpeechActive: speechActiveRef.current,
+    isProcessingSpeech,
     startManualListening,
     stopManualListening,
     startWakeWordListening,
