@@ -54,6 +54,9 @@ export default function App() {
   const [currentTranscript, setCurrentTranscript] = useState('');
   const [activated, setActivated] = useState(false);
   const responseBufferRef = useRef('');
+  // Tracks whether TTS was playing, so we can fire the follow-up window exactly
+  // once when it transitions from speaking → done (see the follow-up effect).
+  const wasSpeakingRef = useRef(false);
 
   // Forward-declared so the speech callbacks can reach the latest version
   // without re-subscribing the recognition stream.
@@ -202,20 +205,30 @@ export default function App() {
 
   // When TTS finishes speaking the reply, open a hands-free follow-up window
   // so the user can just keep talking without saying the wake word again.
+  //
+  // We detect the finish via a ref that remembers whether TTS was playing, and
+  // depend ONLY on tts.isSpeaking. An earlier version also depended on orbState
+  // and called setOrbState('listening') inside the effect — which re-ran the
+  // effect and fired its cleanup, cancelling the pending beginCommandCapture
+  // timeout before the next turn could open. Depending only on isSpeaking keeps
+  // that timeout alive so the follow-up window actually opens.
   useEffect(() => {
-    if (orbState === 'speaking' && !tts.isSpeaking) {
-      console.log('[App] TTS finished — opening follow-up window');
-      setCurrentTranscript('');
-      setOrbState('listening');
-      // Small delay so the tail of the speaker audio doesn't leak into the mic
-      // before we unmute; beginCommandCapture unmutes and opens the window.
-      const t = setTimeout(() => {
-        speechRef.current.beginCommandCapture();
-      }, 350);
-      return () => clearTimeout(t);
+    if (tts.isSpeaking) {
+      wasSpeakingRef.current = true;
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tts.isSpeaking, orbState]);
+    if (!wasSpeakingRef.current) return; // TTS wasn't playing — nothing to follow up on
+    wasSpeakingRef.current = false;
+    console.log('[App] TTS finished — opening follow-up window');
+    setCurrentTranscript('');
+    setOrbState('listening');
+    // Small delay so the tail of the speaker audio doesn't leak into the mic
+    // before we open the window; beginCommandCapture unmutes and starts capture.
+    const t = setTimeout(() => {
+      speechRef.current.beginCommandCapture();
+    }, 350);
+    return () => clearTimeout(t);
+  }, [tts.isSpeaking]);
 
   // Mic button: tap to open a command window immediately.
   const handleMicPress = useCallback(() => {
