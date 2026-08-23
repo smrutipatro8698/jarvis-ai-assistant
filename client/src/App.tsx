@@ -89,6 +89,14 @@ export default function App() {
     }
   }, [speech.isCapturing, speech.isListening]);
 
+  // Mute mic while TTS is playing to prevent echo (Jarvis hearing itself)
+  useEffect(() => {
+    if (tts.isSpeaking) {
+      console.log('[App] TTS is speaking — muting mic to prevent echo');
+      speech.stopAll();
+    }
+  }, [tts.isSpeaking, speech]);
+
   // Update transcript display — show what mic hears in ALL modes for debugging
   useEffect(() => {
     if (speech.transcript) {
