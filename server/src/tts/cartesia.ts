@@ -38,7 +38,9 @@ export class CartesiaTTSProvider implements TTSProvider {
     if (!this.voiceId) throw new Error('CARTESIA_VOICE_ID not configured');
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    // /tts/bytes is non-streaming: the whole clip is generated before it
+    // returns, so allow generous headroom for longer replies.
+    const timeout = setTimeout(() => controller.abort(), 30000);
 
     try {
       const res = await fetch('https://api.cartesia.ai/tts/bytes', {

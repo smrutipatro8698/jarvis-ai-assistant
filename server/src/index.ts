@@ -11,6 +11,29 @@ import { getSTTProvider, STTSession } from './stt';
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Longest reply we send to a cloud TTS engine. Long text is the main cause of
+// synthesis failures (provider length caps, or non-streaming generation blowing
+// past the request timeout) — and a multi-minute spoken monologue is poor UX for
+// a voice assistant anyway. We speak a concise version and still show the FULL
+// answer on screen. Tune or disable (0 = no cap) with TTS_MAX_CHARS.
+const TTS_MAX_CHARS = parseInt(process.env.TTS_MAX_CHARS || '700', 10);
+
+// Trim text to at most `max` chars, preferring the last sentence end so speech
+// never cuts off mid-word. Returns the whole string when it's already short
+// enough or the cap is disabled.
+function trimForSpeech(text: string, max: number): string {
+  if (max <= 0 || text.length <= max) return text;
+  const slice = text.slice(0, max);
+  const sentenceEnd = Math.max(
+    slice.lastIndexOf('. '),
+    slice.lastIndexOf('! '),
+    slice.lastIndexOf('? ')
+  );
+  if (sentenceEnd > max * 0.5) return text.slice(0, sentenceEnd + 1).trim();
+  const wordEnd = slice.lastIndexOf(' ');
+  return (wordEnd > 0 ? text.slice(0, wordEnd) : slice).trim();
+}
+
 app.use(cors());
 app.use(express.json());
 
@@ -143,8 +166,13 @@ wss.on('connection', (ws: WebSocket) => {
       // fails, fall back to browser mode so Jarvis still talks.
       const tts = getTTSProvider();
       let ttsMode: 'browser' | 'server' = 'browser';
+      // Speak a concise version; the full `text` still goes to the screen below.
+      const spokenText = trimForSpeech(text, TTS_MAX_CHARS);
+      if (spokenText.length < text.length) {
+        console.log(`[J.A.R.V.I.S.] Trimmed spoken text for TTS: ${text.length} -> ${spokenText.length} chars (full reply still shown on screen)`);
+      }
       try {
-        const result = await tts.synthesize(text);
+        const result = await tts.synthesize(spokenText);
         ttsMode = result.mode;
         if (result.mode === 'server' && result.audioBase64) {
           console.log(`[J.A.R.V.I.S.] Sending server TTS audio (${tts.name}), base64 len: ${result.audioBase64.length}`);
@@ -154,7 +182,7 @@ wss.on('connection', (ws: WebSocket) => {
           });
         }
       } catch (ttsErr: any) {
-        console.error('[J.A.R.V.I.S.] TTS synthesis failed, falling back to browser voice:', ttsErr.message);
+        console.error(`[J.A.R.V.I.S.] TTS synthesis failed (${tts.name}, ${spokenText.length} chars), falling back to browser voice:`, ttsErr?.message || ttsErr);
         ttsMode = 'browser';
       }
 
