@@ -183,5 +183,13 @@ server.listen(PORT, () => {
   console.log(`  HTTP:      http://localhost:${PORT}`);
   console.log(`  WebSocket: ws://localhost:${PORT}`);
   console.log(`  Health:    http://localhost:${PORT}/api/health`);
+  // Eagerly resolve both providers at boot so the active STT/TTS config (and
+  // any missing-key warnings) is visible right here in the banner — instead of
+  // only appearing lazily on the first request. Their constructors log the
+  // selected provider + settings.
+  const stt = getSTTProvider();
+  const tts = getTTSProvider();
+  console.log(`  STT:       ${stt.name} (${stt.mode})`);
+  console.log(`  TTS:       ${tts.name}`);
   console.log('='.repeat(50));
 });
