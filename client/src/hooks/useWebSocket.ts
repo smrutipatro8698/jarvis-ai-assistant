@@ -7,11 +7,24 @@ interface WebSocketMessage {
 
 type CallbackFn<T> = (value: T) => void;
 
+export interface CompletePayload {
+  text: string;
+  // 'browser' => client speaks the text via Web Speech; 'server' => audio was
+  // already streamed via onAudio and the client just plays that.
+  ttsMode: 'browser' | 'server';
+}
+
+export interface AudioPayload {
+  audioBase64: string;
+  mimeType: string;
+}
+
 export interface UseWebSocketReturn {
   sendMessage: (text: string) => void;
   isConnected: boolean;
   onChunk: (callback: CallbackFn<string>) => void;
-  onComplete: (callback: CallbackFn<string>) => void;
+  onComplete: (callback: CallbackFn<CompletePayload>) => void;
+  onAudio: (callback: CallbackFn<AudioPayload>) => void;
   onToolResult: (callback: CallbackFn<unknown>) => void;
   onError: (callback: CallbackFn<string>) => void;
 }
@@ -43,7 +56,8 @@ export function useWebSocket(): UseWebSocketReturn {
   const connectingRef = useRef(false);
 
   const onChunkRef = useRef<CallbackFn<string> | null>(null);
-  const onCompleteRef = useRef<CallbackFn<string> | null>(null);
+  const onCompleteRef = useRef<CallbackFn<CompletePayload> | null>(null);
+  const onAudioRef = useRef<CallbackFn<AudioPayload> | null>(null);
   const onToolResultRef = useRef<CallbackFn<unknown> | null>(null);
   const onErrorRef = useRef<CallbackFn<string> | null>(null);
 
@@ -97,7 +111,16 @@ export function useWebSocket(): UseWebSocketReturn {
             onChunkRef.current?.(message.data?.text ?? '');
             break;
           case 'assistant_complete':
-            onCompleteRef.current?.(message.data?.text ?? '');
+            onCompleteRef.current?.({
+              text: message.data?.text ?? '',
+              ttsMode: message.data?.ttsMode === 'server' ? 'server' : 'browser',
+            });
+            break;
+          case 'tts_audio':
+            onAudioRef.current?.({
+              audioBase64: message.data?.audioBase64 ?? '',
+              mimeType: message.data?.mimeType ?? 'audio/mpeg',
+            });
             break;
           case 'tool_result':
             onToolResultRef.current?.(message.data);
@@ -161,8 +184,12 @@ export function useWebSocket(): UseWebSocketReturn {
     onChunkRef.current = callback;
   }, []);
 
-  const onComplete = useCallback((callback: CallbackFn<string>) => {
+  const onComplete = useCallback((callback: CallbackFn<CompletePayload>) => {
     onCompleteRef.current = callback;
+  }, []);
+
+  const onAudio = useCallback((callback: CallbackFn<AudioPayload>) => {
+    onAudioRef.current = callback;
   }, []);
 
   const onToolResult = useCallback((callback: CallbackFn<unknown>) => {
@@ -178,6 +205,7 @@ export function useWebSocket(): UseWebSocketReturn {
     isConnected,
     onChunk,
     onComplete,
+    onAudio,
     onToolResult,
     onError,
   };

@@ -5,6 +5,7 @@ import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { ConversationMessage } from './types';
 import { processMessage } from './claude';
+import { getTTSProvider } from './tts';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -47,7 +48,7 @@ wss.on('connection', (ws: WebSocket) => {
       const userText = message.data.text;
       sendMessage('status', { message: 'Processing your request...' });
 
-      const { text, toolResults } = await processMessage(
+      const { text } = await processMessage(
         userText,
         conversationHistory,
         (chunk) => {
@@ -58,7 +59,28 @@ wss.on('connection', (ws: WebSocket) => {
         }
       );
 
-      sendMessage('assistant_complete', { text });
+      // Synthesize the reply through whichever TTS provider is configured.
+      // 'browser' mode returns no audio and the client speaks it locally;
+      // cloud providers return audio the client plays back. If synthesis
+      // fails, fall back to browser mode so Jarvis still talks.
+      const tts = getTTSProvider();
+      let ttsMode: 'browser' | 'server' = 'browser';
+      try {
+        const result = await tts.synthesize(text);
+        ttsMode = result.mode;
+        if (result.mode === 'server' && result.audioBase64) {
+          console.log(`[J.A.R.V.I.S.] Sending server TTS audio (${tts.name}), base64 len: ${result.audioBase64.length}`);
+          sendMessage('tts_audio', {
+            audioBase64: result.audioBase64,
+            mimeType: result.mimeType || 'audio/mpeg',
+          });
+        }
+      } catch (ttsErr: any) {
+        console.error('[J.A.R.V.I.S.] TTS synthesis failed, falling back to browser voice:', ttsErr.message);
+        ttsMode = 'browser';
+      }
+
+      sendMessage('assistant_complete', { text, ttsMode });
     } catch (error: any) {
       console.error('[J.A.R.V.I.S.] Error:', error.message);
       sendMessage('error', { message: `I encountered an error: ${error.message}` });

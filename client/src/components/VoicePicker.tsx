@@ -1,4 +1,4 @@
-import type { VoiceOption } from '../hooks/useSpeechSynthesis';
+import type { VoiceOption } from '../hooks/useTextToSpeech';
 
 interface VoicePickerProps {
   voices: VoiceOption[];

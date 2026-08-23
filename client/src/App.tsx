@@ -10,7 +10,7 @@ import { StatusBar } from './components/StatusBar';
 import { MicButton } from './components/MicButton';
 import { VoicePicker } from './components/VoicePicker';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
-import { useSpeechSynthesis } from './hooks/useSpeechSynthesis';
+import { useTextToSpeech } from './hooks/useTextToSpeech';
 import { useWebSocket } from './hooks/useWebSocket';
 
 function playWakeChime() {
@@ -59,7 +59,7 @@ export default function App() {
   // without re-subscribing the recognition stream.
   const processCommandRef = useRef<(text: string) => void>(() => {});
 
-  const tts = useSpeechSynthesis();
+  const tts = useTextToSpeech();
   const ws = useWebSocket();
 
   const handleWake = useCallback(() => {
@@ -139,7 +139,7 @@ export default function App() {
       setCurrentTranscript(responseBufferRef.current);
     });
 
-    ws.onComplete((fullText: string) => {
+    ws.onComplete(({ text: fullText, ttsMode }) => {
       const text = fullText || responseBufferRef.current;
       responseBufferRef.current = '';
 
@@ -149,7 +149,17 @@ export default function App() {
       ]);
 
       setOrbState('speaking');
-      tts.speak(text);
+      // Server mode: audio already arrived (or will) via onAudio and is playing.
+      // Browser mode: speak the text locally with the Web Speech API.
+      if (ttsMode === 'browser') {
+        tts.speak(text);
+      }
+    });
+
+    // Server-synthesized audio (ElevenLabs / Cartesia). Play it back; this sets
+    // tts.isSpeaking, which drives the same echo-mute + follow-up behavior.
+    ws.onAudio(({ audioBase64, mimeType }) => {
+      tts.playServerAudio(audioBase64, mimeType);
     });
 
     ws.onToolResult((result: unknown) => {
