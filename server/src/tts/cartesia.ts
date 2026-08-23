@@ -19,7 +19,9 @@ export class CartesiaTTSProvider implements TTSProvider {
     this.apiKey = (process.env.CARTESIA_API_KEY || '').trim();
     this.voiceId = (process.env.CARTESIA_VOICE_ID || '').trim();
     this.modelId = (process.env.CARTESIA_MODEL || 'sonic-2').trim();
-    this.version = (process.env.CARTESIA_VERSION || '2024-11-13').trim();
+    // Cartesia-Version pins the API contract. 2026-03-01+ returns structured
+    // JSON errors (parsed below); older/invalid versions fall back to plain text.
+    this.version = (process.env.CARTESIA_VERSION || '2026-03-01').trim();
 
     if (!this.apiKey) {
       console.warn('[TTS:cartesia] CARTESIA_API_KEY is not set — synthesis will fail');
@@ -42,7 +44,10 @@ export class CartesiaTTSProvider implements TTSProvider {
       const res = await fetch('https://api.cartesia.ai/tts/bytes', {
         method: 'POST',
         headers: {
-          'X-API-Key': this.apiKey,
+          // Current Cartesia convention: raw key as a Bearer token (NOT the
+          // legacy X-API-Key header). Server-side only — never ship this to a
+          // browser; clients should use a short-lived access token instead.
+          'Authorization': `Bearer ${this.apiKey}`,
           'Cartesia-Version': this.version,
           'Content-Type': 'application/json',
         },
@@ -62,8 +67,20 @@ export class CartesiaTTSProvider implements TTSProvider {
 
       if (!res.ok) {
         const detail = await res.text().catch(() => '');
-        console.error(`[TTS:cartesia] API error ${res.status}: ${detail.slice(0, 300)}`);
-        throw new Error(`Cartesia API ${res.status}`);
+        // Cartesia-Version 2026-03-01+ returns a structured JSON error; surface
+        // its error_code/message so first-run failures (voice_not_found,
+        // model_not_found, quota_exceeded, bad auth) are self-explanatory.
+        let parsed = '';
+        try {
+          const j = JSON.parse(detail);
+          if (j && (j.error_code || j.message)) {
+            parsed = ` [${j.error_code || 'error'}] ${j.title || ''}: ${j.message || ''} (request_id=${j.request_id || 'n/a'})`;
+          }
+        } catch {
+          /* legacy plain-text error body */
+        }
+        console.error(`[TTS:cartesia] API error ${res.status}:${parsed || ' ' + detail.slice(0, 300)}`);
+        throw new Error(`Cartesia API ${res.status}${parsed}`);
       }
 
       const audioBase64 = Buffer.from(await res.arrayBuffer()).toString('base64');
