@@ -54,70 +54,67 @@ export default function App() {
   const [currentTranscript, setCurrentTranscript] = useState('');
   const [activated, setActivated] = useState(false);
   const responseBufferRef = useRef('');
-  const followUpTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const speech = useSpeechRecognition();
+  // Forward-declared so the speech callbacks can reach the latest version
+  // without re-subscribing the recognition stream.
+  const processCommandRef = useRef<(text: string) => void>(() => {});
+
   const tts = useSpeechSynthesis();
   const ws = useWebSocket();
 
+  const handleWake = useCallback(() => {
+    playWakeChime();
+    tts.stop();
+    setOrbState('listening');
+    setCurrentTranscript('');
+  }, [tts]);
+
+  const speech = useSpeechRecognition({
+    onWake: handleWake,
+    onCommand: (text) => processCommandRef.current(text),
+  });
+  const speechRef = useRef(speech);
+  speechRef.current = speech;
+
   const handleActivate = useCallback(() => {
-    speech.startWakeWordListening();
+    speech.start();
     setActivated(true);
     playWakeChime();
   }, [speech]);
 
-  // Handle wake word detection
+  // Reflect the speech-hook's conversation state onto the orb.
   useEffect(() => {
-    if (speech.wakeWordDetected) {
-      playWakeChime();
-      setOrbState('wake-detected');
-      tts.stop();
-
-      const timer = setTimeout(() => {
-        setOrbState('listening');
-      }, 500);
-      return () => clearTimeout(timer);
-    }
-  }, [speech.wakeWordDetected, tts]);
-
-  // Track mode changes from speech recognition
-  useEffect(() => {
-    if (speech.isCapturing) {
+    if (speech.mode === 'capturing') {
       setOrbState('listening');
-    } else if (speech.isListening) {
-      setOrbState('idle');
+    } else if (speech.mode === 'idle') {
+      // Only drop to idle if we were listening — never override thinking/speaking.
+      setOrbState((s) => (s === 'listening' ? 'idle' : s));
     }
-  }, [speech.isCapturing, speech.isListening]);
+  }, [speech.mode]);
 
-  // Mute mic while TTS is playing to prevent echo (Jarvis hearing itself)
+  // Mute the mic (drop results, keep stream alive) while TTS is playing so
+  // Jarvis never hears its own voice. Unmuting happens in the follow-up effect.
   useEffect(() => {
     if (tts.isSpeaking) {
-      console.log('[App] TTS is speaking — muting mic to prevent echo');
-      speech.stopAll();
+      speechRef.current.setMuted(true);
     }
-  }, [tts.isSpeaking, speech]);
+  }, [tts.isSpeaking]);
 
-  // Update transcript display — show what mic hears in ALL modes for debugging
+  // Show what the mic hears while listening.
   useEffect(() => {
     if (speech.transcript) {
       setCurrentTranscript(speech.transcript);
     }
   }, [speech.transcript]);
 
-  // Handle completed command
+  // Handle a completed spoken command.
   const processCommand = useCallback(
     (text: string) => {
-      console.log('[App] processCommand called with:', JSON.stringify(text));
-      if (!text.trim()) {
-        console.log('[App] processCommand: empty text, ignoring');
-        return;
-      }
+      console.log('[App] processCommand:', JSON.stringify(text));
+      if (!text.trim()) return;
 
-      if (followUpTimerRef.current) {
-        clearTimeout(followUpTimerRef.current);
-        followUpTimerRef.current = null;
-        console.log('[App] Cleared follow-up timer');
-      }
+      // Keep the mic muted while we think + speak the reply.
+      speechRef.current.setMuted(true);
       tts.stop();
 
       setMessages((prev) => [
@@ -129,20 +126,11 @@ export default function App() {
       setCurrentTranscript('');
       responseBufferRef.current = '';
 
-      console.log('[App] Sending to LLM via WebSocket:', text.trim());
       ws.sendMessage(text.trim());
     },
     [tts, ws]
   );
-
-  // Watch for finalTranscript
-  useEffect(() => {
-    if (speech.finalTranscript) {
-      console.log('[App] NEW finalTranscript, calling processCommand:', JSON.stringify(speech.finalTranscript));
-      processCommand(speech.finalTranscript);
-      speech.clearFinalTranscript();
-    }
-  }, [speech.finalTranscript, processCommand, speech.clearFinalTranscript]);
+  processCommandRef.current = processCommand;
 
   // WebSocket event handlers
   useEffect(() => {
@@ -184,44 +172,32 @@ export default function App() {
     });
   }, [ws, tts]);
 
-  // When TTS finishes, stay in listening mode for follow-up
+  // When TTS finishes speaking the reply, open a hands-free follow-up window
+  // so the user can just keep talking without saying the wake word again.
   useEffect(() => {
     if (orbState === 'speaking' && !tts.isSpeaking) {
       console.log('[App] TTS finished — opening follow-up window');
       setCurrentTranscript('');
       setOrbState('listening');
-      speech.startManualListening();
-
-      const closeFollowUp = () => {
-        if (speech.isProcessingSpeech()) {
-          console.log('[App] Speech still active or has pending text, extending follow-up by 3s');
-          followUpTimerRef.current = setTimeout(closeFollowUp, 3000);
-          return;
-        }
-        console.log('[App] Follow-up window closing');
-        speech.stopManualListening();
-        setOrbState('idle');
-        setCurrentTranscript('');
-        if (speech.isSupported) {
-          speech.startWakeWordListening();
-        }
-      };
-
-      if (followUpTimerRef.current) clearTimeout(followUpTimerRef.current);
-      followUpTimerRef.current = setTimeout(closeFollowUp, 7000);
+      // Small delay so the tail of the speaker audio doesn't leak into the mic
+      // before we unmute; beginCommandCapture unmutes and opens the window.
+      const t = setTimeout(() => {
+        speechRef.current.beginCommandCapture();
+      }, 350);
+      return () => clearTimeout(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tts.isSpeaking, orbState]);
 
-  // Mic button handlers
+  // Mic button: tap to open a command window immediately.
   const handleMicPress = useCallback(() => {
     tts.stop();
     setOrbState('listening');
-    speech.startManualListening();
+    speech.beginCommandCapture();
   }, [tts, speech]);
 
   const handleMicRelease = useCallback(() => {
-    speech.stopManualListening();
+    speech.finishCommandCapture();
   }, [speech]);
 
   // Activation screen - browser requires user gesture for mic access
@@ -271,7 +247,7 @@ export default function App() {
             transcript={currentTranscript || undefined}
           />
           <MicButton
-            isCapturing={speech.isCapturing}
+            isCapturing={speech.mode === 'capturing'}
             onPress={handleMicPress}
             onRelease={handleMicRelease}
           />
