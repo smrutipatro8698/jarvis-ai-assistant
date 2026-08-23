@@ -52,7 +52,13 @@ export async function processMessage(
   userMessage: string,
   conversationHistory: ConversationMessage[],
   onChunk?: (chunk: string) => void,
-  onToolResult?: (result: ToolResult) => void
+  onToolResult?: (result: ToolResult) => void,
+  // Speech pipeline (cloud TTS). onDelta receives streamed text to synthesize;
+  // onReset is fired when a turn turns out to be a tool-use turn (i.e. interim
+  // narration like "Let me search that"), telling the pipeline to discard that
+  // turn's buffered text so ONLY the final answer is ever spoken. Kept separate
+  // from onChunk (which drives the on-screen transcript for every turn).
+  speech?: { onDelta: (delta: string) => void; onReset: () => void }
 ): Promise<{ text: string; toolResults: ToolResult[] }> {
   conversationHistory.push({ role: 'user', content: userMessage });
 
@@ -75,7 +81,7 @@ export async function processMessage(
         messages,
       });
 
-      const response = await handleStreamingResponse(stream, onChunk);
+      const response = await handleStreamingResponse(stream, onChunk, speech);
 
       if (response.stopReason === 'tool_use') {
         // Process tool calls from the streamed response
@@ -161,7 +167,8 @@ export async function processMessage(
 
 async function handleStreamingResponse(
   stream: ReturnType<typeof client.messages.stream>,
-  onChunk: (chunk: string) => void
+  onChunk: (chunk: string) => void,
+  speech?: { onDelta: (delta: string) => void; onReset: () => void }
 ): Promise<{
   text: string;
   content: Anthropic.ContentBlock[];
@@ -172,6 +179,19 @@ async function handleStreamingResponse(
   stream.on('text', (textDelta) => {
     text += textDelta;
     onChunk(textDelta);
+    // Feed the voice pipeline live so the final answer is spoken in real time.
+    speech?.onDelta(textDelta);
+  });
+
+  // A tool_use block starting means this turn is interim narration, not the
+  // final answer — tell the voice pipeline to drop this turn's buffered text so
+  // filler like "Let me search that, ma'am" is never synthesized. Any leftover
+  // buffered narration is still below the min chunk size at this point, so
+  // nothing has been sent to the voice yet.
+  stream.on('streamEvent', (event: any) => {
+    if (event?.type === 'content_block_start' && event?.content_block?.type === 'tool_use') {
+      speech?.onReset();
+    }
   });
 
   const finalMessage = await stream.finalMessage();

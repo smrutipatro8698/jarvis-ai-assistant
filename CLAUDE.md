@@ -28,8 +28,11 @@
   and sends each as its own `tts_audio` WS message. So Jarvis starts speaking in
   near-real-time and long answers are read in FULL (no length cap / timeout — each
   chunk is small). `assistant_complete` carries `ttsMode: 'server'` once any audio
-  was sent. Cloud TTS bills per character, so the server logs the running
-  character total after each reply for cost visibility.
+  was sent. Only the FINAL answer is spoken — interim tool-use narration ("Let
+  me search that, ma'am") is reset out of the voice pipeline (`claude.ts` fires a
+  reset when a tool_use block starts) so it never reaches the paid voice, though
+  it still shows on-screen. Cloud TTS bills per character, so the server logs the
+  running character total after each reply for cost visibility.
 - Client side: `client/src/hooks/useTextToSpeech.ts` queues the incoming audio
   chunks and plays them in order (`enqueueServerAudio`), staying `isSpeaking` true
   across the gaps between chunks until the server signals the reply is done

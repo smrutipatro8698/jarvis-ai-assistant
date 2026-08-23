@@ -61,6 +61,11 @@ function makeSentenceChunker(min: number, emit: (chunk: string) => void) {
       buf = '';
       if (chunk) emit(chunk);
     },
+    // Discard buffered text without speaking it (used when a turn turns out to
+    // be interim tool-use narration rather than the final answer).
+    reset() {
+      buf = '';
+    },
   };
 }
 
@@ -216,12 +221,17 @@ wss.on('connection', (ws: WebSocket) => {
         userText,
         conversationHistory,
         (chunk) => {
+          // On-screen transcript: every turn's text (including interim narration).
           sendMessage('assistant_chunk', { text: chunk });
-          chunker?.push(chunk);
         },
         (toolResult) => {
           sendMessage('tool_result', toolResult);
-        }
+        },
+        // Voice pipeline: only the FINAL answer is synthesized. Interim tool-use
+        // narration is reset (dropped) before it ever reaches Cartesia.
+        chunker
+          ? { onDelta: (d) => chunker.push(d), onReset: () => chunker.reset() }
+          : undefined
       );
 
       if (chunker) {
