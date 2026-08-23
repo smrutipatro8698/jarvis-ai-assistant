@@ -73,8 +73,11 @@ const WAKE_PHRASES = [
 // How long a silence (after speech) before we finalize a command.
 const SILENCE_MS = 1800;
 // Follow-up window: how long to wait for the user to START talking after
-// Jarvis finishes speaking (or after a manual mic tap) before giving up.
-const GRACE_MS = 7000;
+// Jarvis finishes speaking (or after a manual mic tap) before giving up and
+// returning to wake-word listening. Note: in server (cloud STT) mode the mic
+// streams to the recognizer during this whole window, so a longer grace means
+// up to this many seconds of (mostly silent) audio billed per follow-up turn.
+const GRACE_MS = 15000;
 
 function findWakePhrase(text: string): string | null {
   const lower = text.toLowerCase();
